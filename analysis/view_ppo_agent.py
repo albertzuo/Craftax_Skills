@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import yaml
-from craftax.environment_base.wrappers import AutoResetEnvWrapper
+from wrappers import AutoResetEnvWrapper
 from flax.training.train_state import TrainState
 from orbax.checkpoint import (
     PyTreeCheckpointer,

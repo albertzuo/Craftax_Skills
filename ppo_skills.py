@@ -409,28 +409,17 @@ def run_ppo(config):
         def _save_network(rs_index, dir_name):
             train_states = out["runner_state"][rs_index]
             train_state = jax.tree.map(lambda x: x[0], train_states)
-            # orbax_checkpointer = PyTreeCheckpointer()
+            orbax_checkpointer = PyTreeCheckpointer()
             options = CheckpointManagerOptions(max_to_keep=1, create=True)
             path = os.path.join(wandb.run.dir, dir_name)
-            # checkpoint_manager = CheckpointManager(path, orbax_checkpointer, options)
-            checkpoint_manager = CheckpointManager(path, options=options)
+            checkpoint_manager = CheckpointManager(path, orbax_checkpointer, options)
             print(f"saved runner state to {path}")
             save_args = orbax_utils.save_args_from_target(train_state)
-            # checkpoint_manager.save(
-            #     int(config["TOTAL_TIMESTEPS"]),
-            #     train_state,
-            #     save_kwargs={"save_args": save_args},
-            # )
             checkpoint_manager.save(
-                int(config["TOTAL_TIMESTEPS"]), args=ocp.args.StandardSave(train_state)
+                config["TOTAL_TIMESTEPS"],
+                train_state,
+                save_kwargs={"save_args": save_args},
             )
-            with CheckpointManager(
-                path, options=options, item_names=("train_state")
-            ) as mngr:
-                mngr.save(
-                    int(config["TOTAL_TIMESTEPS"]),
-                    args=ocp.args.StandardSave(train_state),
-                )
 
         if config["SAVE_POLICY"]:
             _save_network(0, "policies")
