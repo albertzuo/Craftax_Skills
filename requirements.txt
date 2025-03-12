@@ -1,4 +1,5 @@
-jax[cuda12_pip]
+# jax[cuda12_pip]
+jax
 distrax
 optax
 flax
