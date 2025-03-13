@@ -115,7 +115,7 @@ def main(args):
     # Initialize video recording if requested
     frames = [] if args.record_video else None
 
-    while not renderer.is_quit_requested():
+    while not renderer.is_quit_requested() and not done:
         done = np.array([done], dtype=bool)
         obs = jnp.expand_dims(obs, axis=0)
 
