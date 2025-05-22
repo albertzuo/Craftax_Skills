@@ -10,6 +10,8 @@ import yaml
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 # print(sys.path)
+import cv2
+import pygame
 from wrappers import AutoResetEnvWrapper
 from flax.training.train_state import TrainState
 from orbax.checkpoint import (
@@ -20,6 +22,12 @@ from orbax.checkpoint import (
 import orbax.checkpoint as ocp
 
 from models.actor_critic import ActorCriticConv, ActorCritic
+
+from meta_policy.skill_training import (
+    skill_selector,
+    skill_selector_v2,
+    # skill_selector_v3,
+)
 
 
 def main(args):
@@ -33,6 +41,11 @@ def main(args):
                 config[key] = value["value"]
 
     config["NUM_ENVS"] = 1
+
+    # Ensure MAX_NUM_SKILLS is in the config, default if not found
+    if "MAX_NUM_SKILLS" not in config:
+        print("Warning: MAX_NUM_SKILLS not found in config, defaulting to 1")
+        config["MAX_NUM_SKILLS"] = 1 # Or another sensible default
 
     orbax_checkpointer = PyTreeCheckpointer()
     options = CheckpointManagerOptions(max_to_keep=1, create=True)
@@ -80,7 +93,11 @@ def main(args):
     env = AutoResetEnvWrapper(env)
     env_params = env.default_params
 
-    init_x = jnp.zeros((config["NUM_ENVS"], *env.observation_space(env_params).shape))
+    base_obs_shape = env.observation_space(env_params).shape
+    flat_obs_size = np.prod(base_obs_shape)
+    augmented_obs_size = flat_obs_size + config["MAX_NUM_SKILLS"]
+    init_x = jnp.zeros((config["NUM_ENVS"], augmented_obs_size))
+
 
     rng = jax.random.PRNGKey(np.random.randint(2**31))
     rng, _rng, __rng = jax.random.split(rng, 3)
@@ -112,11 +129,24 @@ def main(args):
 
     renderer = CraftaxRenderer(env, env_params, pixel_render_size=1)
 
-    while not renderer.is_quit_requested():
-        done = np.array([done], dtype=bool)
-        obs = jnp.expand_dims(obs, axis=0)
+    # Initialize video recording if requested
+    frames = [] if args.record_video else None
+    frame_num = 0
 
-        pi, value = network.apply(train_state.params, obs)
+
+    while not renderer.is_quit_requested() and frame_num < 1000:
+        done = np.array([done], dtype=bool)
+
+        # Augment observation with the skill vector
+        flat_obs = obs.flatten()
+        # Create the one-hot skill vector for the selected skill
+        skill_vector = jax.nn.one_hot(args.skill_index, config["MAX_NUM_SKILLS"])
+        # cur_skill = skill_selector(flat_obs)
+        # skill_vector = jax.nn.one_hot(cur_skill, config["MAX_NUM_SKILLS"])
+        augmented_obs = jnp.concatenate([flat_obs, skill_vector])
+        augmented_obs_batch = jnp.expand_dims(augmented_obs, axis=0) # Add batch dim
+
+        pi, value = network.apply(train_state.params, augmented_obs_batch)
         rng, _rng = jax.random.split(rng)
         action = pi.sample(seed=_rng)[0]
         # action = jnp.argmax(pi.probs[0, 0])
@@ -133,6 +163,33 @@ def main(args):
                 print("\n")
         renderer.render(env_state)
 
+        frame_num += 1
+
+        # Capture frame for video if recording
+        if args.record_video:
+            # Get pygame surface data as a numpy array
+            frame = pygame.surfarray.array3d(renderer.screen_surface)
+            frame = np.transpose(frame, (1, 0, 2))  # Transpose to correct dimensions
+            frames.append(frame)
+
+    # Save video if recording
+    if args.record_video and frames:
+        print(f"Saving video to {args.record_video}...")
+        print(f"Number of frames: {len(frames)}")
+        if frames:
+            height, width, _ = frames[0].shape
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # codec
+            # fourcc = cv2.VideoWriter_fourcc(*"avc1")
+            video_writer = cv2.VideoWriter(
+                args.record_video, fourcc, 30, (width, height)
+            )
+            for frame in frames:
+                # Convert RGB to BGR for OpenCV
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                video_writer.write(bgr_frame)
+            video_writer.release()
+        print(f"Video saved to {args.record_video}")
+
 
 def print_new_achievements(achievements_cls, old_achievements, new_achievements):
     for i in range(len(old_achievements)):
@@ -142,8 +199,10 @@ def print_new_achievements(achievements_cls, old_achievements, new_achievements)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--path", type=str)
+    parser.add_argument("--path", type=str, required=True)
+    parser.add_argument("--skill_index", type=int, default=0, help="Index of the skill to visualize")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--record_video", type=str)
 
     args, rest_args = parser.parse_known_args(sys.argv[1:])
     if rest_args:

@@ -1,8 +1,8 @@
 FROM nvidia/cuda:12.1.0-cudnn8-devel-ubuntu22.04
 
-ENV CUDA_PATH /usr/local/cuda
-ENV CUDA_INCLUDE_PATH /usr/local/cuda/include
-ENV CUDA_LIBRARY_PATH /usr/local/cuda/lib64
+ENV CUDA_PATH=/usr/local/cuda
+ENV CUDA_INCLUDE_PATH=/usr/local/cuda/include
+ENV CUDA_LIBRARY_PATH=/usr/local/cuda/lib64
 
 # Set timezone
 ENV TZ=Europe/London DEBIAN_FRONTEND=noninteractive
@@ -17,6 +17,8 @@ RUN apt install -y \
     python3.8-venv \
     python3-setuptools \
     python3-wheel
+
+# RUN apt-get install -y ffmpeg libsm6 libxext6 #for opencv-python (instead of opencv-python-headless)
 
 # Create local user
 # https://jtreminio.com/blog/running-docker-containers-as-current-host-user/
@@ -35,7 +37,9 @@ WORKDIR /home/duser
 # Install Python packages
 ENV PATH="/home/duser/.local/bin:$PATH"
 RUN python3 -m pip install --upgrade pip
-ARG REQS
+COPY requirements.txt .
+ARG REQS="-r requirements.txt"
+# RUN df -h
 RUN pip install $REQS -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
-WORKDIR /home/duser/Craftax
+WORKDIR /app

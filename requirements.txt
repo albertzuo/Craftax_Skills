@@ -1,4 +1,6 @@
-jax[cuda12_pip]
+jax[cuda12]
+jax<0.6.0
+opencv-python-headless
 distrax
 optax
 flax
