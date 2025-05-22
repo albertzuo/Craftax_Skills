@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 
+sys.path.append("./")
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -112,7 +113,11 @@ def main(args):
 
     renderer = CraftaxRenderer(env, env_params, pixel_render_size=1)
 
-    while not renderer.is_quit_requested():
+    # Initialize video recording if requested
+    frames = [] if args.record_video else None
+
+    frame_num = 0
+    while not renderer.is_quit_requested() and frame_num < 1000:
         done = np.array([done], dtype=bool)
         obs = jnp.expand_dims(obs, axis=0)
 
@@ -132,6 +137,30 @@ def main(args):
             if done:
                 print("\n")
         renderer.render(env_state)
+        frame_num += 1
+
+        # Capture frame for video if recording
+        if args.record_video:
+            # Get pygame surface data as a numpy array
+            frame = pygame.surfarray.array3d(renderer.screen_surface)
+            frame = np.transpose(frame, (1, 0, 2))  # Transpose to correct dimensions
+            frames.append(frame)
+
+    # Save video if recording
+    if args.record_video and frames:
+        print(f"Saving video to {args.record_video}...")
+        if frames:
+            height, width, _ = frames[0].shape
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # codec
+            video_writer = cv2.VideoWriter(
+                args.record_video, fourcc, 30, (width, height)
+            )
+            for frame in frames:
+                # Convert RGB to BGR for OpenCV
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                video_writer.write(bgr_frame)
+            video_writer.release()
+        print(f"Video saved to {args.record_video}")
 
 
 def print_new_achievements(achievements_cls, old_achievements, new_achievements):
@@ -144,6 +173,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--path", type=str)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--record_video", type=str)
 
     args, rest_args = parser.parse_known_args(sys.argv[1:])
     if rest_args:
