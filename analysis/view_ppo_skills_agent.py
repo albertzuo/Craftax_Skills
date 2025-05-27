@@ -26,6 +26,7 @@ from models.actor_critic import ActorCriticConv, ActorCritic
 from meta_policy.skill_training import (
     skill_selector,
     skill_selector_v2,
+    skill_selector_my_two_skills,
     # skill_selector_v3,
 )
 
@@ -140,9 +141,9 @@ def main(args):
         # Augment observation with the skill vector
         flat_obs = obs.flatten()
         # Create the one-hot skill vector for the selected skill
-        skill_vector = jax.nn.one_hot(args.skill_index, config["MAX_NUM_SKILLS"])
-        # cur_skill = skill_selector(flat_obs)
-        # skill_vector = jax.nn.one_hot(cur_skill, config["MAX_NUM_SKILLS"])
+        # skill_vector = jax.nn.one_hot(args.skill_index, config["MAX_NUM_SKILLS"])
+        cur_skill = skill_selector_my_two_skills(flat_obs)
+        skill_vector = jax.nn.one_hot(cur_skill, config["MAX_NUM_SKILLS"])
         augmented_obs = jnp.concatenate([flat_obs, skill_vector])
         augmented_obs_batch = jnp.expand_dims(augmented_obs, axis=0) # Add batch dim
 

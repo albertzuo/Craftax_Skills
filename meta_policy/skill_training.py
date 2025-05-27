@@ -518,7 +518,8 @@ def skill_selector_my_two_skills(obs: jnp.ndarray) -> SkillID:
     has_wood = inventory[INV_WOOD] > 0.01
     has_stone = inventory[INV_STONE] > 0.01
     has_iron = inventory[INV_IRON] > 0.01
-
+    has_coal = inventory[INV_COAL] > 0.01
+    
     has_wood_pick = inventory[INV_WOOD_PICKAXE] > 0.01
     has_stone_pick = inventory[INV_STONE_PICKAXE] > 0.01
     has_iron_pick = inventory[INV_IRON_PICKAXE] > 0.01
@@ -532,11 +533,11 @@ def skill_selector_my_two_skills(obs: jnp.ndarray) -> SkillID:
     # More complex recipes would require checking actual quantities (e.g., >= 0.1 for 1 item)
     can_craft_wood_pick = has_wood
     can_craft_stone_pick = has_wood & has_stone
-    can_craft_iron_pick = has_wood & has_iron # Simplification: assumes wood handle needed
+    can_craft_iron_pick = has_wood & has_iron & has_coal # Simplification: assumes wood handle needed
 
     can_craft_wood_sword = has_wood
     can_craft_stone_sword = has_wood & has_stone
-    can_craft_iron_sword = has_wood & has_iron # Simplification: assumes wood handle needed
+    can_craft_iron_sword = has_wood & has_iron & has_coal # Simplification: assumes wood handle needed
 
     # Prioritize crafting better tools if materials are available and tool isn't owned
     should_craft_iron_pick = can_craft_iron_pick & ~has_iron_pick
@@ -571,7 +572,7 @@ def terminate_harvest(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_s
     Terminates if a major goal is achieved, health becomes critical, or max duration is reached.
     """
     # Terminate if max duration for harvesting is reached
-    max_duration_reached = current_skill_duration >= 5
+    max_duration_reached = current_skill_duration >= 1
     return max_duration_reached
 
 def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
@@ -579,5 +580,5 @@ def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_ski
     Determines if the CRAFT skill should terminate.
     Terminates if a major goal is achieved, health becomes critical, or max duration is reached.
     """
-    max_duration_reached = current_skill_duration >= 30
+    max_duration_reached = current_skill_duration >= 10
     return max_duration_reached

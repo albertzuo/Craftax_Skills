@@ -18,7 +18,7 @@ class DiaynAc(nn.Module):
         if self.activation == "relu":
             activation = nn.relu
         else:
-            activation = nn.tanh
+            activation = nn.tanh        
 
         actor_mean = nn.Dense(
             self.layer_width,
@@ -71,11 +71,13 @@ class DiaynAc(nn.Module):
             critic
         )
 
+        # Split observation into base state and skill encoding
+        base_obs = x[:, :-self.num_skills]  # All dimensions except last num_skills
         discriminator = nn.Dense(
             self.layer_width,
             kernel_init=orthogonal(np.sqrt(2)),
             bias_init=constant(0.0),
-        )(x)
+        )(base_obs)
         discriminator = activation(discriminator)
 
         discriminator = nn.Dense(

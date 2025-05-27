@@ -7,13 +7,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from craftax.craftax_env import make_craftax_env_from_name
+from craftax.craftax_env import make_craftax_env_from_name # Added BlockType
 
 import wandb
 from typing import NamedTuple
 
 from flax.training import orbax_utils
 from flax.training.train_state import TrainState
+import orbax.checkpoint as ocp
 from orbax.checkpoint import (
     PyTreeCheckpointer,
     CheckpointManagerOptions,
@@ -21,12 +22,48 @@ from orbax.checkpoint import (
 )
 
 from logz.batch_logging import batch_log, create_log_dict
+from models.diayn_ac import DiaynAc
 from models.actor_critic import (
     ActorCritic,
     ActorCriticConv,
 )
-from models.icm import ICMEncoder, ICMForward, ICMInverse
-from models.diayn_ac import DiaynAc
+from reward_fns.gemini_skill_rewards import (
+    calculate_harvesting_reward,
+    crafting_reward_fn,
+    survival_reward_function,
+)
+from reward_fns.gemini_diverse_skills_rewards import (
+    reward_broaden_horizons_stockpile,
+    reward_execute_next_milestone_skill,
+)
+from reward_fns.gemini_personality_rewards import (
+    cautious_reward_function,
+    driven_reward_function,
+    playful_reward_function,
+)
+from reward_fns.my_skill_rewards import (
+    my_harvesting_reward_fn,
+    my_crafting_reward_fn,
+)
+from meta_policy.skill_training import (
+    skill_selector,
+    # skill_selector_v2,
+    # skill_selector_v3,
+    skill_selector_two_skills,
+    skill_selector_my_two_skills,
+    terminate_harvest,
+    terminate_craft,
+)
+# from meta_policy.gemini_diverse_skills_training import (
+#     skill_selector,
+#     skill_selector_v2,
+# )
+# from meta_policy.gemini_personality_training import (
+#     skill_selector,
+#     terminate_cautious,
+#     terminate_driven,
+#     terminate_playful,
+# )
 from wrappers import (
     LogWrapper,
     OptimisticResetVecEnvWrapper,
@@ -92,11 +129,13 @@ def make_train(config):
         #         env.action_space(env_params).n, config["LAYER_SIZE"]
         #     )
         network = DiaynAc(
-            config["NUM_SKILLS"], env.action_space(env_params).n, config["LAYER_SIZE"]
+            config["MAX_NUM_SKILLS"], env.action_space(env_params).n, config["LAYER_SIZE"]
         )
 
         rng, _rng = jax.random.split(rng)
-        init_x = jnp.zeros((1, *env.observation_space(env_params).shape))
+        init_x = jnp.zeros(
+            (1, env.observation_space(env_params).shape[0] + config["MAX_NUM_SKILLS"])
+        )
         network_params = network.init(_rng, init_x)
         if config["ANNEAL_LR"]:
             tx = optax.chain(
@@ -114,97 +153,26 @@ def make_train(config):
             tx=tx,
         )
 
-        # Exploration state
-        ex_state = {
-            "icm_encoder": None,
-            "icm_forward": None,
-            "icm_inverse": None,
-            "e3b_matrix": None,
-        }
-
-        if config["TRAIN_ICM"]:
-            obs_shape = env.observation_space(env_params).shape
-            assert len(obs_shape) == 1, "Only configured for 1D observations"
-            obs_shape = obs_shape[0]
-
-            # Encoder
-            icm_encoder_network = ICMEncoder(
-                num_layers=3,
-                output_dim=config["ICM_LATENT_SIZE"],
-                layer_size=config["ICM_LAYER_SIZE"],
-            )
-            rng, _rng = jax.random.split(rng)
-            icm_encoder_network_params = icm_encoder_network.init(
-                _rng, jnp.zeros((1, obs_shape))
-            )
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["ICM_LR"], eps=1e-5),
-            )
-            ex_state["icm_encoder"] = TrainState.create(
-                apply_fn=icm_encoder_network.apply,
-                params=icm_encoder_network_params,
-                tx=tx,
-            )
-
-            # Forward
-            icm_forward_network = ICMForward(
-                num_layers=3,
-                output_dim=config["ICM_LATENT_SIZE"],
-                layer_size=config["ICM_LAYER_SIZE"],
-                num_actions=env.num_actions,
-            )
-            rng, _rng = jax.random.split(rng)
-            icm_forward_network_params = icm_forward_network.init(
-                _rng, jnp.zeros((1, config["ICM_LATENT_SIZE"])), jnp.zeros((1,))
-            )
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["ICM_LR"], eps=1e-5),
-            )
-            ex_state["icm_forward"] = TrainState.create(
-                apply_fn=icm_forward_network.apply,
-                params=icm_forward_network_params,
-                tx=tx,
-            )
-
-            # Inverse
-            icm_inverse_network = ICMInverse(
-                num_layers=3,
-                output_dim=env.num_actions,
-                layer_size=config["ICM_LAYER_SIZE"],
-            )
-            rng, _rng = jax.random.split(rng)
-            icm_inverse_network_params = icm_inverse_network.init(
-                _rng,
-                jnp.zeros((1, config["ICM_LATENT_SIZE"])),
-                jnp.zeros((1, config["ICM_LATENT_SIZE"])),
-            )
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(config["ICM_LR"], eps=1e-5),
-            )
-            ex_state["icm_inverse"] = TrainState.create(
-                apply_fn=icm_inverse_network.apply,
-                params=icm_inverse_network_params,
-                tx=tx,
-            )
-
-            if config["USE_E3B"]:
-                ex_state["e3b_matrix"] = (
-                    jnp.repeat(
-                        jnp.expand_dims(
-                            jnp.identity(config["ICM_LATENT_SIZE"]), axis=0
-                        ),
-                        config["NUM_ENVS"],
-                        axis=0,
-                    )
-                    / config["E3B_LAMBDA"]
-                )
-
         # INIT ENV
         rng, _rng = jax.random.split(rng)
         obsv, env_state = env.reset(_rng, env_params)
+
+        rng, _rng = jax.random.split(rng)
+        # skill_indices = jax.random.randint(
+        #     _rng, (config["NUM_ENVS"],), 0, config["MAX_NUM_SKILLS"]
+        # )
+        skill_indices = jnp.full((config["NUM_ENVS"],), 0, dtype=jnp.int32) # init to skill 0
+        skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
+
+        def augment_obs_with_skill(obsv, skill_vec):
+            return jnp.concatenate([obsv, skill_vec], axis=-1)
+
+        obsv = jax.vmap(augment_obs_with_skill)(obsv, skill_vectors)
+        intrinsic_rewards = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
+        final_intrinsic_rewards = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
+        skill_timesteps = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
+        final_skill_timesteps = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
+        current_skill_durations = jnp.zeros(config["NUM_ENVS"])  # Track current duration of active skill
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
@@ -213,13 +181,16 @@ def make_train(config):
                 (
                     train_state,
                     env_state,
+                    intrinsic_rewards,
+                    final_intrinsic_rewards,
+                    skill_timesteps,
+                    final_skill_timesteps,
+                    current_skill_durations,  # Add to runner state
                     last_obs,
-                    ex_state,
                     rng,
                     update_step,
                 ) = runner_state
 
-                # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
                 pi, value, discriminator = network.apply(train_state.params, last_obs)
                 action = pi.sample(seed=_rng)
@@ -227,61 +198,74 @@ def make_train(config):
 
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
-                obsv, env_state, reward_e, done, info = env.step(
+                base_obsv, env_state, reward_e, done, info = env.step(
                     _rng, env_state, action, env_params
                 )
 
-                reward_i = jnp.zeros(config["NUM_ENVS"])
+                last_skill_indices = jnp.argmax(last_obs[:, -config["MAX_NUM_SKILLS"]:], axis=-1)
+                
+                # Get termination conditions for each skill
+                def get_termination_single(index, last_b_obs_s, b_obs_s, duration):
+                    terminate_fns = [terminate_harvest, terminate_craft]
+                    return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration)
+                
+                # Check termination conditions
+                should_terminate = jax.vmap(get_termination_single)(
+                    last_skill_indices, last_obs[:, :-config["MAX_NUM_SKILLS"]], base_obsv, current_skill_durations
+                )
+                
+                # Only select new skills for environments that should terminate
+                new_skill_indices = jax.vmap(skill_selector_my_two_skills)(base_obsv)
+                skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
+                
+                # Update current skill durations
+                current_skill_durations = jnp.where(
+                    should_terminate,
+                    jnp.zeros_like(current_skill_durations),  # Reset to 0 for terminated skills
+                    current_skill_durations + 1  # Increment for continuing skills
+                )
+                
+                skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
+                obsv = jax.vmap(augment_obs_with_skill)(base_obsv, skill_vectors)
+                last_base_obsv = last_obs[:, :-config["MAX_NUM_SKILLS"]]
 
-                if config["TRAIN_ICM"]:
-                    latent_obs = ex_state["icm_encoder"].apply_fn(
-                        ex_state["icm_encoder"].params, last_obs
-                    )
-                    latent_next_obs = ex_state["icm_encoder"].apply_fn(
-                        ex_state["icm_encoder"].params, obsv
-                    )
+                # Calculate discriminator reward
+                _, _, discriminator = network.apply(train_state.params, last_obs)
+                logq_z = discriminator.log_prob(last_skill_indices)  # Log probability of true skill
+                log_p_z = -jnp.log(config["MAX_NUM_SKILLS"])  # Log probability under uniform prior
+                # discriminator_reward = (logq_z - log_p_z) * config["DIAYN_REWARD_COEF"]
+                discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
 
-                    latent_next_obs_pred = ex_state["icm_forward"].apply_fn(
-                        ex_state["icm_forward"].params, latent_obs, action
-                    )
-                    error = (latent_next_obs - latent_next_obs_pred) * (
-                        1 - done[:, None]
-                    )
-                    mse = jnp.square(error).mean(axis=-1)
+                reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn]
+                def select_reward_single(index, last_b_obs_s, b_obs_s):
+                    return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
 
-                    reward_i = mse * config["ICM_REWARD_COEFF"]
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv)
 
-                    if config["USE_E3B"]:
-                        # Embedding is (NUM_ENVS, 128)
-                        # e3b_matrix is (NUM_ENVS, 128, 128)
-                        us = jax.vmap(jnp.matmul)(ex_state["e3b_matrix"], latent_obs)
-                        bs = jax.vmap(jnp.dot)(latent_obs, us)
+                reward = reward_i + discriminator_reward  # Add discriminator reward to total reward
+                current_env_indices = jnp.arange(config["NUM_ENVS"])
+                updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
+                updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
 
-                        def update_c(c, b, u):
-                            return c - (1.0 / (1 + b)) * jnp.outer(u, u)
+                done_expanded = done[:, None]
 
-                        updated_cs = jax.vmap(update_c)(ex_state["e3b_matrix"], bs, us)
-                        new_cs = (
-                            jnp.repeat(
-                                jnp.expand_dims(
-                                    jnp.identity(config["ICM_LATENT_SIZE"]), axis=0
-                                ),
-                                config["NUM_ENVS"],
-                                axis=0,
-                            )
-                            / config["E3B_LAMBDA"]
-                        )
-                        ex_state["e3b_matrix"] = jnp.where(
-                            done[:, None, None], new_cs, updated_cs
-                        )
+                updated_final_intrinsic_rewards = final_intrinsic_rewards * (1 - done_expanded) + updated_intrinsic_rewards * done_expanded
+                updated_intrinsic_rewards = updated_intrinsic_rewards * (1 - done_expanded)
 
-                        e3b_bonus = jnp.where(
-                            done, jnp.zeros((config["NUM_ENVS"],)), bs
-                        )
 
-                        reward_i = e3b_bonus * config["E3B_REWARD_COEFF"]
+                # updated_final_skill_timesteps = final_skill_timesteps * (1 - done_expanded) + updated_skill_timesteps * done_expanded
+                # info["returned_episode_lengths"] is (NUM_ENVS,)
+                # updated_skill_timesteps is (NUM_ENVS, MAX_NUM_SKILLS)
+                episode_lengths = info["returned_episode_lengths"]
+                # Use jnp.where to avoid division by zero for envs not done, or if length is 0 (though unlikely for done episodes)
+                # The result for not-done envs will be masked out by (1 - done_expanded) anyway.
+                safe_episode_lengths = jnp.where(done, episode_lengths, 1.0)
+                
+                # skill_proportions will be (NUM_ENVS, MAX_NUM_SKILLS)
+                skill_proportions = updated_skill_timesteps / jnp.maximum(safe_episode_lengths[:, None], 1.0)
 
-                reward = reward_e + reward_i
+                updated_final_skill_timesteps = final_skill_timesteps * (1 - done_expanded) + skill_proportions * done_expanded
+                updated_skill_timesteps = updated_skill_timesteps * (1 - done_expanded)
 
                 transition = Transition(
                     done=done,
@@ -290,16 +274,21 @@ def make_train(config):
                     reward=reward,
                     reward_i=reward_i,
                     reward_e=reward_e,
-                    log_prob=log_prob,
+                    log_prob=log_prob, 
                     obs=last_obs,
-                    next_obs=obsv,
+                    next_obs=obsv, 
                     info=info,
                 )
+
                 runner_state = (
                     train_state,
                     env_state,
-                    obsv,
-                    ex_state,
+                    updated_intrinsic_rewards,
+                    updated_final_intrinsic_rewards,
+                    updated_skill_timesteps,
+                    updated_final_skill_timesteps,
+                    current_skill_durations,  # Add to runner state
+                    obsv, 
                     rng,
                     update_step,
                 )
@@ -309,16 +298,22 @@ def make_train(config):
                 _env_step, runner_state, None, config["NUM_STEPS"]
             )
 
-            # CALCULATE ADVANTAGE
             (
                 train_state,
                 env_state,
-                last_obs,
-                ex_state,
+                intrinsic_rewards,
+                final_intrinsic_rewards,
+                skill_timesteps,
+                final_skill_timesteps,
+                current_skill_durations,  # Add to runner state
+                last_obs, 
                 rng,
-                update_step,
+                update_step, 
             ) = runner_state
-            _, last_val = network.apply(train_state.params, last_obs)
+
+
+            # CALCULATE ADVANTAGE
+            _, last_val, _ = network.apply(train_state.params, last_obs) 
 
             def _calculate_gae(traj_batch, last_val):
                 def _get_advantages(gae_and_next_value, transition):
@@ -384,15 +379,17 @@ def make_train(config):
                         entropy = pi.entropy().mean()
 
                         # CALCULATE DISCRIMINATOR LOSS
-                        # Assuming traj_batch has a 'skill' field containing the true skill labels
-                        discriminator_loss = -discriminator.log_prob(traj_batch.skill).mean()
+                        # Extract skill indices from the observations (last MAX_NUM_SKILLS dimensions)
+                        skill_indices = jnp.argmax(traj_batch.obs[:, -config["MAX_NUM_SKILLS"]:], axis=-1)
+                        discriminator_loss = -discriminator.log_prob(skill_indices).mean()
 
                         total_loss = (
                             loss_actor
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
-                            + config["DIAYN_COEF"] * discriminator_loss  # Add discriminator loss with coefficient
+                            + discriminator_loss
                         )
+
                         return total_loss, (value_loss, loss_actor, entropy, discriminator_loss)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -453,145 +450,40 @@ def make_train(config):
                 _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
             )
 
+
             train_state = update_state[0]
+
+
+            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _ , _ , _ = runner_state
+            
+            info_extended = traj_batch.info
+            info_extended["final_intrinsic_rewards_skill_0"] = final_intrinsic_rewards_log[:, 0]
+            info_extended["final_intrinsic_rewards_skill_1"] = final_intrinsic_rewards_log[:, 1]
+            info_extended["final_intrinsic_rewards_skill_2"] = final_intrinsic_rewards_log[:, 2]
+            info_extended["final_skill_timesteps_skill_0"] = final_skill_timesteps_log[:, 0]
+            info_extended["final_skill_timesteps_skill_1"] = final_skill_timesteps_log[:, 1]
+            info_extended["final_skill_timesteps_skill_2"] = final_skill_timesteps_log[:, 2]
+
+
             metric = jax.tree.map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
-                / traj_batch.info["returned_episode"].sum(),
-                traj_batch.info,
+                / (traj_batch.info["returned_episode"].sum()),
+                info_extended,
             )
 
             rng = update_state[-1]
-
-            # UPDATE EXPLORATION STATE
-            def _update_ex_epoch(update_state, unused):
-                def _update_ex_minbatch(ex_state, traj_batch):
-                    def _inverse_loss_fn(
-                        icm_encoder_params, icm_inverse_params, traj_batch
-                    ):
-                        latent_obs = ex_state["icm_encoder"].apply_fn(
-                            icm_encoder_params, traj_batch.obs
-                        )
-                        latent_next_obs = ex_state["icm_encoder"].apply_fn(
-                            icm_encoder_params, traj_batch.next_obs
-                        )
-
-                        action_pred_logits = ex_state["icm_inverse"].apply_fn(
-                            icm_inverse_params, latent_obs, latent_next_obs
-                        )
-                        true_action = jax.nn.one_hot(
-                            traj_batch.action, num_classes=action_pred_logits.shape[-1]
-                        )
-
-                        bce = -jnp.mean(
-                            jnp.sum(
-                                action_pred_logits
-                                * true_action
-                                * (1 - traj_batch.done[:, None]),
-                                axis=1,
-                            )
-                        )
-
-                        return bce * config["ICM_INVERSE_LOSS_COEF"]
-
-                    inverse_grad_fn = jax.value_and_grad(
-                        _inverse_loss_fn,
-                        has_aux=False,
-                        argnums=(
-                            0,
-                            1,
-                        ),
-                    )
-                    inverse_loss, grads = inverse_grad_fn(
-                        ex_state["icm_encoder"].params,
-                        ex_state["icm_inverse"].params,
-                        traj_batch,
-                    )
-                    icm_encoder_grad, icm_inverse_grad = grads
-                    ex_state["icm_encoder"] = ex_state["icm_encoder"].apply_gradients(
-                        grads=icm_encoder_grad
-                    )
-                    ex_state["icm_inverse"] = ex_state["icm_inverse"].apply_gradients(
-                        grads=icm_inverse_grad
-                    )
-
-                    def _forward_loss_fn(icm_forward_params, traj_batch):
-                        latent_obs = ex_state["icm_encoder"].apply_fn(
-                            ex_state["icm_encoder"].params, traj_batch.obs
-                        )
-                        latent_next_obs = ex_state["icm_encoder"].apply_fn(
-                            ex_state["icm_encoder"].params, traj_batch.next_obs
-                        )
-
-                        latent_next_obs_pred = ex_state["icm_forward"].apply_fn(
-                            icm_forward_params, latent_obs, traj_batch.action
-                        )
-
-                        error = (latent_next_obs - latent_next_obs_pred) * (
-                            1 - traj_batch.done[:, None]
-                        )
-                        return (
-                            jnp.square(error).mean() * config["ICM_FORWARD_LOSS_COEF"]
-                        )
-
-                    forward_grad_fn = jax.value_and_grad(
-                        _forward_loss_fn, has_aux=False
-                    )
-                    forward_loss, icm_forward_grad = forward_grad_fn(
-                        ex_state["icm_forward"].params, traj_batch
-                    )
-                    ex_state["icm_forward"] = ex_state["icm_forward"].apply_gradients(
-                        grads=icm_forward_grad
-                    )
-
-                    losses = (inverse_loss, forward_loss)
-                    return ex_state, losses
-
-                (ex_state, traj_batch, rng) = update_state
-                rng, _rng = jax.random.split(rng)
-                batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-                assert (
-                    batch_size == config["NUM_STEPS"] * config["NUM_ENVS"]
-                ), "batch size must be equal to number of steps * number of envs"
-                permutation = jax.random.permutation(_rng, batch_size)
-                batch = jax.tree.map(
-                    lambda x: x.reshape((batch_size,) + x.shape[2:]), traj_batch
-                )
-                shuffled_batch = jax.tree.map(
-                    lambda x: jnp.take(x, permutation, axis=0), batch
-                )
-                minibatches = jax.tree.map(
-                    lambda x: jnp.reshape(
-                        x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:])
-                    ),
-                    shuffled_batch,
-                )
-                ex_state, losses = jax.lax.scan(
-                    _update_ex_minbatch, ex_state, minibatches
-                )
-                update_state = (ex_state, traj_batch, rng)
-                return update_state, losses
-
-            if config["TRAIN_ICM"]:
-                ex_update_state = (ex_state, traj_batch, rng)
-                ex_update_state, ex_loss = jax.lax.scan(
-                    _update_ex_epoch,
-                    ex_update_state,
-                    None,
-                    config["EXPLORATION_UPDATE_EPOCHS"],
-                )
-                metric["icm_inverse_loss"] = ex_loss[0].mean()
-                metric["icm_forward_loss"] = ex_loss[1].mean()
-                metric["reward_i"] = traj_batch.reward_i.mean()
-                metric["reward_e"] = traj_batch.reward_e.mean()
-
-                ex_state = ex_update_state[0]
-                rng = ex_update_state[-1]
 
             # wandb logging
             if config["DEBUG"] and config["USE_WANDB"]:
 
                 def callback(metric, update_step):
                     to_log = create_log_dict(metric, config)
+                    to_log["final_intrinsic_rewards_skill_0"] = metric["final_intrinsic_rewards_skill_0"]
+                    to_log["final_intrinsic_rewards_skill_1"] = metric["final_intrinsic_rewards_skill_1"]
+                    to_log["final_intrinsic_rewards_skill_2"] = metric["final_intrinsic_rewards_skill_2"]
+                    to_log["final_skill_timesteps_skill_0"] = metric["final_skill_timesteps_skill_0"]
+                    to_log["final_skill_timesteps_skill_1"] = metric["final_skill_timesteps_skill_1"]
+                    to_log["final_skill_timesteps_skill_2"] = metric["final_skill_timesteps_skill_2"]
                     batch_log(update_step, to_log, config)
 
                 jax.debug.callback(
@@ -603,8 +495,12 @@ def make_train(config):
             runner_state = (
                 train_state,
                 env_state,
-                last_obs,
-                ex_state,
+                intrinsic_rewards,
+                final_intrinsic_rewards,
+                skill_timesteps,
+                final_skill_timesteps,
+                current_skill_durations,  # Add to runner state
+                last_obs, 
                 rng,
                 update_step + 1,
             )
@@ -614,15 +510,21 @@ def make_train(config):
         runner_state = (
             train_state,
             env_state,
-            obsv,
-            ex_state,
+            intrinsic_rewards,
+            final_intrinsic_rewards,
+            skill_timesteps,
+            final_skill_timesteps,
+            current_skill_durations,  # Add to runner state
+            obsv, 
             _rng,
-            0,
+            0, 
         )
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
         )
-        return {"runner_state": runner_state}  # , "info": metric}
+
+        return {"runner_state": runner_state} 
+
 
     return train
 
@@ -665,7 +567,7 @@ def run_ppo(config):
             print(f"saved runner state to {path}")
             save_args = orbax_utils.save_args_from_target(train_state)
             checkpoint_manager.save(
-                config["TOTAL_TIMESTEPS"],
+                int(config["TOTAL_TIMESTEPS"]),
                 train_state,
                 save_kwargs={"save_args": save_args},
             )
@@ -676,14 +578,14 @@ def run_ppo(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env_name", type=str, default="Craftax-Symbolic-v1")
+    parser.add_argument("--env_name", type=str, default="Craftax-Classic-Symbolic-v1")
     parser.add_argument(
         "--num_envs",
         type=int,
         default=1024,
     )
     parser.add_argument(
-        "--total_timesteps", type=lambda x: int(float(x)), default=1e9
+        "--total_timesteps", type=lambda x: int(float(x)), default=1e8
     )  # Allow scientific notation
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--num_steps", type=int, default=64)
@@ -715,31 +617,14 @@ if __name__ == "__main__":
     )
     parser.add_argument("--optimistic_reset_ratio", type=int, default=16)
 
-    # EXPLORATION
-    parser.add_argument("--exploration_update_epochs", type=int, default=4)
-    # ICM
-    parser.add_argument("--icm_reward_coeff", type=float, default=1.0)
-    parser.add_argument("--train_icm", action="store_true")
-    parser.add_argument("--icm_lr", type=float, default=3e-4)
-    parser.add_argument("--icm_forward_loss_coef", type=float, default=1.0)
-    parser.add_argument("--icm_inverse_loss_coef", type=float, default=1.0)
-    parser.add_argument("--icm_layer_size", type=int, default=256)
-    parser.add_argument("--icm_latent_size", type=int, default=32)
-    # E3B
-    parser.add_argument("--e3b_reward_coeff", type=float, default=1.0)
-    parser.add_argument("--use_e3b", action="store_true")
-    parser.add_argument("--e3b_lambda", type=float, default=0.1)
-    # DIAYN
-    parser.add_argument("--num_skills", type=int, default=5)
-    parser.add_argument("--diayn_coef", type=float, default=0.5, help="Coefficient for the DIAYN discriminator loss")
+    # SKILLS
+    parser.add_argument("--max_num_skills", type=int, default=3, help="Number of distinct skills (harvest, craft, sustain)") # Default to 3
+    parser.add_argument("--diayn_reward_coef", type=float, default=0.1, help="Coefficient for the DIAYN discriminator reward")
 
     args, rest_args = parser.parse_known_args(sys.argv[1:])
     if rest_args:
         raise ValueError(f"Unknown args {rest_args}")
 
-    if args.use_e3b:
-        assert args.train_icm
-        assert args.icm_reward_coeff == 0
     if args.seed is None:
         args.seed = np.random.randint(2**31)
 

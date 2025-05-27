@@ -40,6 +40,10 @@ from reward_fns.gemini_personality_rewards import (
     driven_reward_function,
     playful_reward_function,
 )
+from reward_fns.my_skill_rewards import (
+    my_harvesting_reward_fn,
+    my_crafting_reward_fn,
+)
 from meta_policy.skill_training import (
     skill_selector,
     # skill_selector_v2,
@@ -219,7 +223,7 @@ def make_train(config):
                 
                 skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
                 obsv = jax.vmap(augment_obs_with_skill)(base_obsv, skill_vectors)
-                last_base_obs = last_obs[:, :-config["MAX_NUM_SKILLS"]]
+                last_base_obsv = last_obs[:, :-config["MAX_NUM_SKILLS"]]
                 # def reward_fn_harvest_single(last_obs_s, obs_s):
                 #     return calculate_harvesting_reward(last_obs_s, obs_s)
                 # def reward_fn_craft_single(last_obs_s, obs_s):
@@ -229,11 +233,11 @@ def make_train(config):
                 # reward_fns_single = [reward_fn_harvest_single, reward_fn_craft_single, reward_fn_sustain_single]
                 #reward_fns_single = [calculate_harvesting_reward, crafting_reward_fn, survival_reward_function]
                 # reward_fns_single = [reward_broaden_horizons_stockpile, reward_execute_next_milestone_skill]
-                reward_fns_single = [calculate_harvesting_reward, crafting_reward_fn]
+                reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn]
                 def select_reward_single(index, last_b_obs_s, b_obs_s):
                     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
 
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obsv)
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv)
 
                 reward = reward_i # reward_e + reward_i
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
