@@ -78,16 +78,16 @@ def skill_selector(obs: jnp.ndarray) -> SkillID:
 
     # --- 1. Check Sustain Conditions ---
     # Thresholds are based on the normalized values (scaled by 10 in obs)
-    low_health_threshold = 0.4 # e.g., health < 4
+    low_health_threshold = 0.3 # e.g., health < 3
     low_food_threshold = 0.3   # e.g., food < 3
     low_drink_threshold = 0.3  # e.g., drink < 3
-    low_energy_threshold = 0.2 # e.g., energy < 2
+    low_energy_threshold = 0.3 # e.g., energy < 3
     night_threshold = 0.4      # Example threshold for darkness
 
-    is_low_health = intrinsics[STAT_HEALTH] < low_health_threshold
-    is_low_food = intrinsics[STAT_FOOD] < low_food_threshold
-    is_low_drink = intrinsics[STAT_DRINK] < low_drink_threshold
-    is_low_energy = intrinsics[STAT_ENERGY] < low_energy_threshold
+    is_low_health = intrinsics[STAT_HEALTH] <= low_health_threshold
+    is_low_food = intrinsics[STAT_FOOD] <= low_food_threshold
+    is_low_drink = intrinsics[STAT_DRINK] <= low_drink_threshold
+    is_low_energy = intrinsics[STAT_ENERGY] <= low_energy_threshold
     is_night = light_level < night_threshold
 
     # Need to sleep if energy is low and it's dark enough
@@ -107,24 +107,38 @@ def skill_selector(obs: jnp.ndarray) -> SkillID:
     has_wood = inventory[INV_WOOD] > 0.01
     has_stone = inventory[INV_STONE] > 0.01
     has_iron = inventory[INV_IRON] > 0.01
+    has_coal = inventory[INV_COAL] > 0.01
 
     has_wood_pick = inventory[INV_WOOD_PICKAXE] > 0.01
     has_stone_pick = inventory[INV_STONE_PICKAXE] > 0.01
     has_iron_pick = inventory[INV_IRON_PICKAXE] > 0.01
+
+    has_wood_sword = inventory[INV_WOOD_SWORD] > 0.01
+    has_stone_sword = inventory[INV_STONE_SWORD] > 0.01
+    has_iron_sword = inventory[INV_IRON_SWORD] > 0.01
 
     # Define simplified conditions for crafting pickaxes
     # Assumes 1 wood for wood pickaxe, 1 wood + 1 stone for stone, 1 wood + 1 iron for iron
     # More complex recipes would require checking actual quantities (e.g., >= 0.1 for 1 item)
     can_craft_wood_pick = has_wood
     can_craft_stone_pick = has_wood & has_stone
-    can_craft_iron_pick = has_wood & has_iron # Simplification: assumes wood handle needed
+    can_craft_iron_pick = has_wood & has_iron & has_coal 
+
+    can_craft_wood_sword = has_wood
+    can_craft_stone_sword = has_wood & has_stone
+    can_craft_iron_sword = has_wood & has_iron & has_coal # Simplification: assumes wood handle needed
 
     # Prioritize crafting better tools if materials are available and tool isn't owned
     should_craft_iron_pick = can_craft_iron_pick & ~has_iron_pick
     should_craft_stone_pick = can_craft_stone_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for iron
     should_craft_wood_pick = can_craft_wood_pick & ~has_wood_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for stone/iron
 
-    craft_needed = should_craft_wood_pick | should_craft_stone_pick | should_craft_iron_pick
+    should_craft_iron_sword = can_craft_iron_sword & ~has_iron_sword
+    should_craft_stone_sword = can_craft_stone_sword & ~has_stone_sword & ~should_craft_iron_sword
+    should_craft_wood_sword = can_craft_wood_sword & ~has_wood_sword & ~has_stone_sword & ~should_craft_iron_sword
+
+    craft_needed = should_craft_wood_pick | should_craft_stone_pick | should_craft_iron_pick | \
+                   should_craft_wood_sword | should_craft_stone_sword | should_craft_iron_sword
 
     # --- 3. Determine Final Skill ---
     # Use jnp.where for JAX-compatible conditional logic
@@ -165,49 +179,6 @@ def skill_selector_v2(obs: jnp.ndarray) -> IntEnum:
     """
 
     # --- Constants (Defined internally) ---
-    # Environment Config (Assumed, adjust as needed)
-    OBS_MAP_WIDTH = 9
-    OBS_MAP_HEIGHT = 7
-    NUM_BLOCK_TYPES = 17
-    NUM_MOB_TYPES = 4
-    NUM_INVENTORY_SLOTS = 12 # wood, stone, coal, iron, diamond, sapling, wood_p, stone_p, iron_p, wood_s, stone_s, iron_s
-    NUM_INTRINSIC_STATS = 4 # health, food, drink, energy
-    NUM_DIRECTION_CLASSES = 4
-
-    # Observation Slice Indices
-    map_flat_size = OBS_MAP_HEIGHT * OBS_MAP_WIDTH * (NUM_BLOCK_TYPES + NUM_MOB_TYPES)
-    inventory_start_idx = map_flat_size
-    intrinsics_start_idx = inventory_start_idx + NUM_INVENTORY_SLOTS
-    direction_start_idx = intrinsics_start_idx + NUM_INTRINSIC_STATS
-    light_level_idx = direction_start_idx + NUM_DIRECTION_CLASSES
-    is_sleeping_idx = light_level_idx + 1
-
-    # Skill IDs
-    class SkillID(IntEnum):
-        HARVEST = 0
-        CRAFT = 1
-        SUSTAIN = 2
-
-    # Inventory Indices (Relative to inventory slice start)
-    INV_WOOD = 0
-    INV_STONE = 1
-    INV_COAL = 2
-    INV_IRON = 3
-    INV_DIAMOND = 4 # Not used in this logic
-    INV_SAPLING = 5 # Not used in this logic
-    INV_WOOD_PICKAXE = 6
-    INV_STONE_PICKAXE = 7
-    INV_IRON_PICKAXE = 8
-    INV_WOOD_SWORD = 9
-    INV_STONE_SWORD = 10
-    INV_IRON_SWORD = 11
-
-    # Intrinsic Stat Indices (Relative to intrinsics slice start)
-    STAT_HEALTH = 0
-    STAT_FOOD = 1
-    STAT_DRINK = 2
-    STAT_ENERGY = 3
-
     # Thresholds & Recipes (Normalized values, scaled by 10 in obs)
     # Sustain
     low_health_threshold = 0.5 # Slightly higher threshold (5 health)
@@ -533,7 +504,7 @@ def skill_selector_my_two_skills(obs: jnp.ndarray) -> SkillID:
     # More complex recipes would require checking actual quantities (e.g., >= 0.1 for 1 item)
     can_craft_wood_pick = has_wood
     can_craft_stone_pick = has_wood & has_stone
-    can_craft_iron_pick = has_wood & has_iron & has_coal # Simplification: assumes wood handle needed
+    can_craft_iron_pick = has_wood & has_iron & has_coal 
 
     can_craft_wood_sword = has_wood
     can_craft_stone_sword = has_wood & has_stone
@@ -578,7 +549,74 @@ def terminate_harvest(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_s
 def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
     """
     Determines if the CRAFT skill should terminate.
+    Terminates if max duration is reached AND either:
+    1. A new tool has been crafted (comparing inventory states), or
+    2. No new tools can be crafted (all tools are present)
+    """
+    # Extract inventory slices from both observations
+    prev_inventory = jax.lax.dynamic_slice_in_dim(
+        prev_obs, inventory_start_idx, NUM_INVENTORY_SLOTS, axis=0
+    )
+    current_inventory = jax.lax.dynamic_slice_in_dim(
+        current_obs, inventory_start_idx, NUM_INVENTORY_SLOTS, axis=0
+    )
+
+    # Check for changes in tools (pickaxes and swords)
+    tools_indices = [INV_WOOD_PICKAXE, INV_STONE_PICKAXE, INV_IRON_PICKAXE,
+                    INV_WOOD_SWORD, INV_STONE_SWORD, INV_IRON_SWORD]
+    
+    # Check if any tool was newly crafted (went from 0 to >0)
+    new_tool_crafted = jnp.any(
+        jnp.array([
+            (prev_inventory[idx] <= 0.01) & (current_inventory[idx] > 0.01)
+            for idx in tools_indices
+        ])
+    )
+
+    # Check if all tools are present
+    all_tools_present = jnp.all(
+        jnp.array([
+            current_inventory[idx] > 0.01
+            for idx in tools_indices
+        ])
+    )
+
+    # Maximum duration reached
+    max_duration_reached = current_skill_duration >= 1
+
+    # Terminate if max duration reached AND either a new tool was crafted or all tools are present
+    should_terminate = max_duration_reached & (new_tool_crafted | all_tools_present)
+    
+    return should_terminate.astype(jnp.bool_)
+
+def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
+    """
+    Determines if the SUSTAIN skill should terminate.
     Terminates if a major goal is achieved, health becomes critical, or max duration is reached.
     """
-    max_duration_reached = current_skill_duration >= 10
-    return max_duration_reached
+
+    health_idx = intrinsics_start_idx + 0
+    food_idx = intrinsics_start_idx + 1
+    drink_idx = intrinsics_start_idx + 2
+    energy_idx = intrinsics_start_idx + 3
+    health_safe = current_obs[health_idx] >= 0.7  # 70% of max health
+    food_safe = current_obs[food_idx] >= 0.6      # 60% of max food
+    drink_safe = current_obs[drink_idx] >= 0.6    # 60% of max drink
+    energy_safe = current_obs[energy_idx] >= 0.6  # 60% of max energy
+
+    # All stats are safe
+    stats_safe = jnp.logical_and(
+        health_safe,
+        jnp.logical_and(
+            food_safe,
+            jnp.logical_and(drink_safe, energy_safe)
+        )
+    )
+
+    # Maximum duration reached
+    max_duration_reached = current_skill_duration >= 1
+
+    # Terminate if both conditions are met
+    should_terminate = jnp.logical_and(max_duration_reached, stats_safe)
+    
+    return should_terminate.astype(jnp.bool_)

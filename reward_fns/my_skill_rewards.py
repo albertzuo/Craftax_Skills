@@ -40,11 +40,11 @@ STONE_SWORD_IDX = 10
 IRON_SWORD_IDX = 11
 
 HARVESTING_REWARD_WEIGHTS = jnp.array([
-    1,  # Wood
-    5.0,  # Stone
-    10.0,  # Coal
+    0.5,  # Wood
+    2.0,  # Stone
+    5.0,  # Coal
     10.0,  # Iron
-    50.0, # Diamond
+    20.0, # Diamond
     0.1,  # Sapling
 ], dtype=jnp.float32)
 
@@ -62,12 +62,12 @@ CRAFTED_ITEM_INDICES = jnp.array([
 # Order must match CRAFTED_ITEM_INDICES:
 # [wood_p, stone_p, iron_p, wood_s, stone_s, iron_s]
 CRAFTING_REWARD_WEIGHTS = jnp.array([
-    1,  # Reward for wood_pickaxe
-    5.0,  # Reward for stone_pickaxe
-    10.0,  # Reward for iron_pickaxe
-    1,  # Reward for wood_sword
-    5.0,  # Reward for stone_sword
-    10.0,  # Reward for iron_sword
+    2.0,  # Reward for wood_pickaxe
+    10.0,  # Reward for stone_pickaxe
+    20.0,  # Reward for iron_pickaxe
+    2.0,  # Reward for wood_sword
+    10.0,  # Reward for stone_sword
+    20.0,  # Reward for iron_sword
 ])
 
 def get_inventory_slice(obs: jnp.ndarray) -> jnp.ndarray:
@@ -234,8 +234,42 @@ def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndar
     weighted_increase = increase_in_counts * CRAFTING_REWARD_WEIGHTS
 
     # Sum the weighted increases across all target items to get the final reward.
-    reward = jnp.sum(weighted_increase) #+ entered_crafting_pos_reward - 0.01
+    reward = jnp.sum(weighted_increase) + entered_crafting_pos_reward - 0.01
 
     # --- 6. Return Reward ---
     # Ensure the reward is a float32, a common type for RL rewards.
     return reward.astype(jnp.float32)
+
+@jax.jit
+def my_survival_reward_function(prev_obs, obs):
+    """
+    Calculates a reward signal focused on survival in the Craftax environment.
+
+    Args:
+        obs: The flattened observation vector for the current state
+             (output of render_craftax_symbolic).
+        prev_obs: The flattened observation vector for the previous state.
+
+    Returns:
+        A scalar reward value (float).
+    """
+    reward = 0.0
+
+    # --- Extract Player Intrinsics (Current State) ---
+    # Rescale from [0, 1] back to original values (e.g., 0-10)
+    health = obs[health_idx] * 10.0
+    food = obs[food_idx] * 10.0
+    drink = obs[drink_idx] * 10.0
+    energy = obs[energy_idx] * 10.0
+    is_sleeping = obs[is_sleeping_idx] # Already 0 or 1
+
+    # --- Extract Previous Health ---
+    prev_health = prev_obs[health_idx] * 10.0
+
+    # === Reward Components ===
+
+    # 1. Health & Damage Penalty
+    # Penalize taking damage (decrease in health)
+    reward = health - prev_health + 0.1
+
+    return reward

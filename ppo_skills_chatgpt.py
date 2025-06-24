@@ -43,6 +43,7 @@ from reward_fns.gemini_personality_rewards import (
 from reward_fns.my_skill_rewards import (
     my_harvesting_reward_fn,
     my_crafting_reward_fn,
+    my_survival_reward_function,
 )
 from meta_policy.skill_training import (
     skill_selector,
@@ -52,6 +53,7 @@ from meta_policy.skill_training import (
     skill_selector_my_two_skills,
     terminate_harvest,
     terminate_craft,
+    terminate_sustain,
 )
 # from meta_policy.gemini_diverse_skills_training import (
 #     skill_selector,
@@ -202,7 +204,7 @@ def make_train(config):
                 
                 # Get termination conditions for each skill
                 def get_termination_single(index, last_b_obs_s, b_obs_s, duration):
-                    terminate_fns = [terminate_harvest, terminate_craft]
+                    terminate_fns = [terminate_harvest, terminate_craft, terminate_sustain]
                     return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration)
                 
                 # Check termination conditions
@@ -211,7 +213,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(skill_selector_my_two_skills)(base_obsv)
+                new_skill_indices = jax.vmap(skill_selector)(base_obsv)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -224,16 +226,7 @@ def make_train(config):
                 skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
                 obsv = jax.vmap(augment_obs_with_skill)(base_obsv, skill_vectors)
                 last_base_obsv = last_obs[:, :-config["MAX_NUM_SKILLS"]]
-                # def reward_fn_harvest_single(last_obs_s, obs_s):
-                #     return calculate_harvesting_reward(last_obs_s, obs_s)
-                # def reward_fn_craft_single(last_obs_s, obs_s):
-                #     return crafting_reward_fn(last_obs_s, obs_s)
-                # def reward_fn_sustain_single(last_obs_s, obs_s):
-                #     return survival_reward_function(last_obs_s, obs_s)
-                # reward_fns_single = [reward_fn_harvest_single, reward_fn_craft_single, reward_fn_sustain_single]
-                #reward_fns_single = [calculate_harvesting_reward, crafting_reward_fn, survival_reward_function]
-                # reward_fns_single = [reward_broaden_horizons_stockpile, reward_execute_next_milestone_skill]
-                reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn]
+                reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
                 def select_reward_single(index, last_b_obs_s, b_obs_s):
                     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
 

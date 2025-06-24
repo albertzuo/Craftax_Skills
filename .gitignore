@@ -3,6 +3,7 @@ wandb/
 res/
 runs/
 videos/
+plots/
 
 play_data
 

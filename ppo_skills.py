@@ -31,7 +31,11 @@ from reward_fns.skill_rewards import (
     reward_craft_useful_items,
     reward_explore_efficiently,
 )
-from reward_fns.my_skill_rewards import my_crafting_reward_fn
+from reward_fns.my_skill_rewards import (
+    my_harvesting_reward_fn,
+    my_crafting_reward_fn,
+    my_survival_reward_function,
+)
 from wrappers import (
     LogWrapper,
     OptimisticResetVecEnvWrapper,
@@ -163,9 +167,9 @@ def make_train(config):
 
                 # reward_i = jax.vmap(reward_harvest_resources)(base_obsv)
                 last_base_obsv = last_obs[:, :-config["MAX_NUM_SKILLS"]]
-                reward_i = jax.vmap(my_crafting_reward_fn)(last_base_obsv, base_obsv)
+                reward_i = jax.vmap(my_survival_reward_function)(last_base_obsv, base_obsv)
 
-                reward = reward_e + reward_i
+                reward = reward_i#reward_e + reward_i
 
                 transition = Transition(
                     done=done,
