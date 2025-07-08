@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from craftax.craftax_env import make_craftax_env_from_name # Added BlockType
+from craftax.craftax_classic.constants import *
 
 import wandb
 from typing import NamedTuple
@@ -53,6 +54,9 @@ from meta_policy.skill_training import (
     # skill_selector_v3,
     skill_selector_two_skills,
     skill_selector_my_two_skills,
+    single_skill_selector_zero,
+    single_skill_selector_one,
+    single_skill_selector_two,
     terminate_harvest,
     terminate_craft,
     terminate_sustain,
@@ -237,6 +241,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
+                # new_skill_indices = jax.vmap(skill_selector)(base_obsv)
                 new_skill_indices = jax.vmap(skill_selector)(base_obsv)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
@@ -264,7 +269,7 @@ def make_train(config):
 
                 reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv)
 
-                reward = reward_i #+ discriminator_reward #+ reward_e
+                reward = reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -630,7 +635,7 @@ def run_ppo(config):
 
 def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     """
-    Run a single-episode eval, track skill indices, plot and save/log.
+    Run a single-episode eval, track skill indices and vital stats, plot and save/log.
     """
     
     env = make_craftax_env_from_name(config["ENV_NAME"], not config["USE_OPTIMISTIC_RESETS"])
@@ -638,10 +643,27 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     env = AutoResetEnvWrapper(env)
     env_params = env.default_params
 
+    # Calculate observation indices for health, food, drink, energy
+    NUM_BLOCK_TYPES = len(BlockType)
+    NUM_MOB_TYPES = 4
+    all_map_flat_size = OBS_DIM[0] * OBS_DIM[1] * (NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+    inventory_size = 12
+    intrinsics_start_idx = all_map_flat_size + inventory_size
+    
+    health_idx = intrinsics_start_idx + 0
+    food_idx = intrinsics_start_idx + 1
+    drink_idx = intrinsics_start_idx + 2
+    energy_idx = intrinsics_start_idx + 3
+
     rng = jax.random.PRNGKey(config["SEED"] + update_step)
     obsv, env_state = env.reset(rng, env_params)
     done = False
     skill_trace = []
+    health_trace = []
+    food_trace = []
+    drink_trace = []
+    energy_trace = []
+    reward_trace = []
     t = 0
     current_skill_duration = 0
     last_skill_index = 0
@@ -652,14 +674,13 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         last_obs = last_obs.flatten()
         if should_terminate_skill:
             curr_skill_index = skill_selector(last_obs)
-            current_skill_duration = 0
+            current_skill_duration = 0 # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
             current_skill_duration += 1
         skill_vector = jax.nn.one_hot(curr_skill_index, config["MAX_NUM_SKILLS"])
         last_obs = jnp.concatenate([last_obs, skill_vector])
 
-        
         last_obs_batch = jnp.expand_dims(last_obs, axis=0)
         pi, value = network.apply(train_state.params, last_obs_batch)
 
@@ -667,7 +688,6 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         action = pi.sample(seed=_rng)[0]
         rng, _rng = jax.random.split(rng)
         base_obs, env_state, reward_e, done, info = env.step(_rng, env_state, action, env_params)
-
         
         def get_termination_single(index, last_b_obs_s, b_obs_s, duration):
             terminate_fns = [terminate_harvest, terminate_craft, terminate_sustain]
@@ -675,7 +695,20 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
 
         should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration)
 
+        # Calculate active skill reward
+        reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
+        def select_reward_single(index, last_b_obs_s, b_obs_s):
+            return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
+        
+        skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
+
+        # Track skill and vital stats
         skill_trace.append(curr_skill_index)
+        health_trace.append(round(base_obs[health_idx] * 10.0))  # Convert to 0-10 range
+        food_trace.append(round(base_obs[food_idx] * 10.0))
+        drink_trace.append(round(base_obs[drink_idx] * 10.0))
+        energy_trace.append(round(base_obs[energy_idx] * 10.0))
+        reward_trace.append(skill_reward)
         # if config["USE_WANDB"]:
         #     wandb.log({
         #         "eval/timestep": t,
@@ -687,32 +720,63 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         if hasattr(done, "item"):
             done = done.item()
     
-    # Plot step plot using matplotlib
+    # Create combined subplot layout with all plots
     timesteps = list(range(len(skill_trace)))
-    plt.step(timesteps, skill_trace, where='post')
-    plt.xlabel('Timestep')
-    plt.ylabel('Active Skill')
-    plt.title(f'Active Skill Over Time (Update {update_frac})')
-    plt.grid(True, alpha=0.3)
+    fig, axes = plt.subplots(4, 2, figsize=(12, 16))
+    fig.suptitle(f'Agent Performance During Evaluation (Update {update_frac}%)', fontsize=16, y=0.98)
+    
+    # Skill plot (top left)
+    axes[0, 0].step(timesteps, skill_trace, where='post', color='blue', linewidth=2)
+    axes[0, 0].set_title('Active Skill')
+    axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].set_ylim(-0.5, 2.5)
+    axes[0, 0].set_yticks([0, 1, 2])
+    
+    # Active skill reward plot (top right)
+    axes[0, 1].plot(timesteps, reward_trace, color='purple', linewidth=2)
+    axes[0, 1].set_title('Active Skill Reward')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Health plot (second row left)
+    axes[1, 0].plot(timesteps, health_trace, color='red', linewidth=2)
+    axes[1, 0].set_title('Health')
+    axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_ylim(0, 10)
+    
+    # Food plot (second row right)
+    axes[1, 1].plot(timesteps, food_trace, color='green', linewidth=2)
+    axes[1, 1].set_title('Food')
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].set_ylim(0, 10)
+    
+    # Drink plot (third row left)
+    axes[2, 0].plot(timesteps, drink_trace, color='cyan', linewidth=2)
+    axes[2, 0].set_title('Drink')
+    axes[2, 0].grid(True, alpha=0.3)
+    axes[2, 0].set_ylim(0, 10)
+    
+    # Energy plot (third row right)
+    axes[2, 1].plot(timesteps, energy_trace, color='orange', linewidth=2)
+    axes[2, 1].set_title('Energy')
+    axes[2, 1].grid(True, alpha=0.3)
+    axes[2, 1].set_ylim(0, 10)
+    
+    # Combined vital stats plot (bottom left)
+    axes[3, 0].plot(timesteps, health_trace, color='red', linewidth=2)
+    axes[3, 0].plot(timesteps, food_trace, color='green', linewidth=2)
+    axes[3, 0].plot(timesteps, drink_trace, color='cyan', linewidth=2)
+    axes[3, 0].plot(timesteps, energy_trace, color='orange', linewidth=2)
+    axes[3, 0].set_title('Combined Vital Stats')
+    axes[3, 0].grid(True, alpha=0.3)
+    axes[3, 0].set_ylim(0, 10)
+    
+    # Adjust layout with proper spacing
     plt.tight_layout()
     
-    # Log step plot to wandb if enabled
+    # Log combined plot to wandb if enabled
     if config["USE_WANDB"]:
-        wandb.log({f"Active Skill {update_frac}": plt}, commit=False)
-        # wandb.log({f"eval/active_skill_{update_frac}": wandb.plot.line(table, "timestep", "skill_index", title=f"Active Skill {update_frac}")}, commit=False)
-        # wandb.log({
-        #     "eval/timestep": list(range(len(skill_trace))),
-        #     f"eval/active_skill_{update_step+1}": skill_trace 
-        # })
-        # wandb.log({
-        #     f"eval/skill_trace_{update_step+1}": wandb.plot.line_series(
-        #         xs = list(range(len(skill_trace))),
-        #         ys = [skill_trace],
-        #         keys = ["Skill"],
-        #         title = f"Skill Trace ({update_step+1})"
-        #     ) #wandb.plot.line(table, "timestep", "skill_index"),
-        # }, step=update_step+1)
-        # jax.debug.print("Skill trace size: {}", len(list(enumerate(skill_trace))))
+        wandb.log({f"Eval/agent_performance_{update_frac}": fig}, commit=False)
+    
     plt.close()
 
 if __name__ == "__main__":

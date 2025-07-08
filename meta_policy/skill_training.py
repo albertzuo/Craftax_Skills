@@ -537,6 +537,16 @@ def skill_selector_my_two_skills(obs: jnp.ndarray) -> SkillID:
 
     return selected_skill_id
 
+def single_skill_selector_zero(obs: jnp.ndarray) -> SkillID:
+    return SkillID.HARVEST
+
+def single_skill_selector_one(obs: jnp.ndarray) -> SkillID:
+    return SkillID.CRAFT
+
+def single_skill_selector_two(obs: jnp.ndarray) -> SkillID:
+    return SkillID.SUSTAIN
+
+
 def terminate_harvest(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
     """
     Determines if the HARVEST skill should terminate.
@@ -585,7 +595,7 @@ def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_ski
     max_duration_reached = current_skill_duration >= 1
 
     # Terminate if max duration reached AND either a new tool was crafted or all tools are present
-    should_terminate = max_duration_reached & (new_tool_crafted | all_tools_present)
+    should_terminate = max_duration_reached #& (new_tool_crafted | all_tools_present)
     
     return should_terminate.astype(jnp.bool_)
 

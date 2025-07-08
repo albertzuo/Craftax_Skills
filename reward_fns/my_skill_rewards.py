@@ -143,7 +143,7 @@ def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> 
 
     # Calculate the weighted reward
     # Multiply the positive change of each resource by its corresponding weight
-    weighted_reward = positive_delta_materials * HARVESTING_REWARD_WEIGHTS
+    weighted_reward = positive_delta_materials * HARVESTING_REWARD_WEIGHTS / 2.0
 
     # Sum the weighted rewards for all resources to get the final scalar reward
     total_reward = jnp.sum(weighted_reward, axis=-1)
@@ -234,7 +234,7 @@ def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndar
     weighted_increase = increase_in_counts * CRAFTING_REWARD_WEIGHTS
 
     # Sum the weighted increases across all target items to get the final reward.
-    reward = jnp.sum(weighted_increase) + entered_crafting_pos_reward - 0.01
+    reward = jnp.sum(weighted_increase) + entered_crafting_pos_reward
 
     # --- 6. Return Reward ---
     # Ensure the reward is a float32, a common type for RL rewards.
@@ -257,19 +257,54 @@ def my_survival_reward_function(prev_obs, obs):
 
     # --- Extract Player Intrinsics (Current State) ---
     # Rescale from [0, 1] back to original values (e.g., 0-10)
-    health = obs[health_idx] * 10.0
-    food = obs[food_idx] * 10.0
-    drink = obs[drink_idx] * 10.0
-    energy = obs[energy_idx] * 10.0
-    is_sleeping = obs[is_sleeping_idx] # Already 0 or 1
+    health = round(obs[health_idx] * 10.0)
+    food = round(obs[food_idx] * 10.0)
+    drink = round(obs[drink_idx] * 10.0)
+    energy = round(obs[energy_idx] * 10.0)
+    is_sleeping = round(obs[is_sleeping_idx]) # Already 0 or 1
 
     # --- Extract Previous Health ---
-    prev_health = prev_obs[health_idx] * 10.0
+    prev_health = round(prev_obs[health_idx] * 10.0)
+    prev_food = round(prev_obs[food_idx] * 10.0)
+    prev_drink = round(prev_obs[drink_idx] * 10.0)
+    prev_energy = round(prev_obs[energy_idx] * 10.0)
+    intrinsic_stat_multiplier = 0.1
+
+    # --- Mob Proximity Penalty ---
+    center_x, center_y = OBS_DIM[0] // 2, OBS_DIM[1] // 2
+    
+    # Extract map observation and reshape to spatial format
+    map_obs = obs[:all_map_flat_size]
+    map_obs = map_obs.reshape(OBS_DIM[0], OBS_DIM[1], NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+    
+    # Get mob layer (last NUM_MOB_TYPES channels)
+    mob_layer = map_obs[:, :, NUM_BLOCK_TYPES:]
+    
+    # Define hostile mob indices (zombie=0, skeleton=2 based on common Craftax setup)
+    zombie_idx = 0
+    skeleton_idx = 2
+    
+    # Check 3x3 area around player for hostile mobs
+    local_area = mob_layer[center_x-1:center_x+2, center_y-1:center_y+2, :]
+    
+    # Penalty for being near hostile mobs
+    nearby_zombies = jnp.sum(local_area[:, :, zombie_idx])
+    nearby_skeletons = jnp.sum(local_area[:, :, skeleton_idx])
+    
+    mob_proximity_penalty = -1 * intrinsic_stat_multiplier * (nearby_zombies + nearby_skeletons)
 
     # === Reward Components ===
 
     # 1. Health & Damage Penalty
     # Penalize taking damage (decrease in health)
-    reward = health - prev_health + 0.1
+    reward = health - prev_health
+    reward += intrinsic_stat_multiplier * (food - prev_food)
+    reward += intrinsic_stat_multiplier * (drink - prev_drink)
+    reward += intrinsic_stat_multiplier * (energy - prev_energy)
+    
+    reward += mob_proximity_penalty
+
+    is_reset = jnp.logical_and(prev_health < 8.0, health == 9.0)
+    reward = jnp.where(is_reset, -10.0, reward)
 
     return reward
