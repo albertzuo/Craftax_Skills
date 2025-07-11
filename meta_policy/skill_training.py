@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 from enum import IntEnum # Using IntEnum for clarity and JAX compatibility
+# from craftax.craftax_classic.envs.craftax_state import EnvState
 
 # Assume these constants are defined elsewhere, based on the environment specifics.
 # These are illustrative values, adjust them based on the actual Craftax environment config.
@@ -547,16 +548,16 @@ def single_skill_selector_two(obs: jnp.ndarray) -> SkillID:
     return SkillID.SUSTAIN
 
 
-def terminate_harvest(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
+def terminate_harvest(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: jnp.ndarray, done: jnp.ndarray) -> jnp.ndarray:
     """
     Determines if the HARVEST skill should terminate.
     Terminates if a major goal is achieved, health becomes critical, or max duration is reached.
     """
     # Terminate if max duration for harvesting is reached
     max_duration_reached = current_skill_duration >= 1
-    return max_duration_reached
+    return jnp.logical_or(done, max_duration_reached)
 
-def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
+def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: jnp.ndarray, done: jnp.ndarray) -> jnp.ndarray:
     """
     Determines if the CRAFT skill should terminate.
     Terminates if max duration is reached AND either:
@@ -597,9 +598,9 @@ def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_ski
     # Terminate if max duration reached AND either a new tool was crafted or all tools are present
     should_terminate = max_duration_reached #& (new_tool_crafted | all_tools_present)
     
-    return should_terminate.astype(jnp.bool_)
+    return jnp.logical_or(done, should_terminate)
 
-def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: int) -> jnp.bool_:
+def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_skill_duration: jnp.ndarray, done: jnp.ndarray) -> jnp.ndarray:
     """
     Determines if the SUSTAIN skill should terminate.
     Terminates if a major goal is achieved, health becomes critical, or max duration is reached.
@@ -609,7 +610,7 @@ def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_s
     food_idx = intrinsics_start_idx + 1
     drink_idx = intrinsics_start_idx + 2
     energy_idx = intrinsics_start_idx + 3
-    health_safe = current_obs[health_idx] >= 0.7  # 70% of max health
+    health_safe = current_obs[health_idx] >= 0.6  # 70% of max health
     food_safe = current_obs[food_idx] >= 0.6      # 60% of max food
     drink_safe = current_obs[drink_idx] >= 0.6    # 60% of max drink
     energy_safe = current_obs[energy_idx] >= 0.6  # 60% of max energy
@@ -629,4 +630,4 @@ def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_s
     # Terminate if both conditions are met
     should_terminate = jnp.logical_and(max_duration_reached, stats_safe)
     
-    return should_terminate.astype(jnp.bool_)
+    return jnp.logical_or(done, should_terminate)

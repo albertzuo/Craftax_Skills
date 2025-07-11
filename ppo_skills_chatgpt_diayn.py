@@ -43,7 +43,7 @@ from reward_fns.gemini_personality_rewards import (
     driven_reward_function,
     playful_reward_function,
 )
-from reward_fns.my_skill_rewards import (
+from reward_fns.my_skill_rewards_state import (
     my_harvesting_reward_fn,
     my_crafting_reward_fn,
     my_survival_reward_function,
@@ -224,6 +224,7 @@ def make_train(config):
 
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
+                prev_env_state = env_state  # Save previous state for reward calculation
                 base_obsv, env_state, reward_e, done, info = env.step(
                     _rng, env_state, action, env_params
                 )
@@ -231,18 +232,17 @@ def make_train(config):
                 last_skill_indices = jnp.argmax(last_obs[:, -config["MAX_NUM_SKILLS"]:], axis=-1)
                 
                 # Get termination conditions for each skill
-                def get_termination_single(index, last_b_obs_s, b_obs_s, duration):
+                def get_termination_single(index, last_b_obs_s, b_obs_s, duration, done_val):
                     terminate_fns = [terminate_harvest, terminate_craft, terminate_sustain]
-                    return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration)
+                    return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration, done_val)
                 
                 # Check termination conditions
                 should_terminate = jax.vmap(get_termination_single)(
-                    last_skill_indices, last_obs[:, :-config["MAX_NUM_SKILLS"]], base_obsv, current_skill_durations
+                    last_skill_indices, last_obs[:, :-config["MAX_NUM_SKILLS"]], base_obsv, current_skill_durations, done
                 )
                 
                 # Only select new skills for environments that should terminate
-                # new_skill_indices = jax.vmap(skill_selector)(base_obsv)
-                new_skill_indices = jax.vmap(skill_selector)(base_obsv)
+                new_skill_indices = jax.vmap(single_skill_selector_zero)(base_obsv)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -264,12 +264,12 @@ def make_train(config):
                 discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
 
                 reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
-                def select_reward_single(index, last_b_obs_s, b_obs_s):
-                    return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
+                def select_reward_single(index, prev_state, cur_state, done_val):
+                    return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
 
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv)
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
 
-                reward = reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
+                reward = reward_e#reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -303,7 +303,7 @@ def make_train(config):
                     reward_e=reward_e,
                     log_prob=log_prob, 
                     obs=last_obs,
-                    next_obs=obsv, 
+                    next_obs=obsv,
                     info=info,
                 )
 
@@ -517,7 +517,6 @@ def make_train(config):
             rng = update_state[-1]
 
             def _maybe_eval_callback(train_state, config, update_step, network):
-                # update_step = int(np.asarray(update_step))
                 for i, eval_step in enumerate(eval_steps):
                     if update_step >= eval_step and eval_step not in already_evaluated:
                         # jax.debug.breakpoint()
@@ -643,17 +642,46 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     env = AutoResetEnvWrapper(env)
     env_params = env.default_params
 
-    # Calculate observation indices for health, food, drink, energy
+    # Calculate observation indices for mob counting
     NUM_BLOCK_TYPES = len(BlockType)
     NUM_MOB_TYPES = 4
     all_map_flat_size = OBS_DIM[0] * OBS_DIM[1] * (NUM_BLOCK_TYPES + NUM_MOB_TYPES)
-    inventory_size = 12
-    intrinsics_start_idx = all_map_flat_size + inventory_size
     
-    health_idx = intrinsics_start_idx + 0
-    food_idx = intrinsics_start_idx + 1
-    drink_idx = intrinsics_start_idx + 2
-    energy_idx = intrinsics_start_idx + 3
+    # Helper function to count mobs in 3x3 area around player
+    def count_mobs_nearby(obs_flat):
+        # Player is always at center of observation
+        center_x, center_y = OBS_DIM[0] // 2, OBS_DIM[1] // 2
+        
+        # Extract and reshape map observation
+        map_obs = obs_flat[:all_map_flat_size]
+        map_obs = map_obs.reshape(OBS_DIM[0], OBS_DIM[1], NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+        
+        # Extract 3x3 area around player, focus on mob channels
+        local_area = map_obs[center_x-1:center_x+2, center_y-1:center_y+2, NUM_BLOCK_TYPES:]
+        
+        # Count total mobs in the 3x3 area (sum across all mob types and positions)
+        total_mobs = jnp.sum(local_area)
+        
+        return total_mobs
+
+    # Helper function to check if adjacent to lava
+    def is_adjacent_to_lava(obs_flat):
+        # Player is always at center of observation
+        center_x, center_y = OBS_DIM[0] // 2, OBS_DIM[1] // 2
+        
+        # Extract and reshape map observation
+        map_obs = obs_flat[:all_map_flat_size]
+        map_obs = map_obs.reshape(OBS_DIM[0], OBS_DIM[1], NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+        
+        # Check the 4 adjacent positions for lava
+        adjacent_lava = (
+            map_obs[center_x-1, center_y, BlockType.LAVA.value] +    # up
+            map_obs[center_x+1, center_y, BlockType.LAVA.value] +    # down
+            map_obs[center_x, center_y-1, BlockType.LAVA.value] +    # left
+            map_obs[center_x, center_y+1, BlockType.LAVA.value]      # right
+        )
+        
+        return adjacent_lava > 0
 
     rng = jax.random.PRNGKey(config["SEED"] + update_step)
     obsv, env_state = env.reset(rng, env_params)
@@ -664,20 +692,23 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     drink_trace = []
     energy_trace = []
     reward_trace = []
+    mobs_nearby_trace = []
+    lava_adjacent_trace = []
     t = 0
-    current_skill_duration = 0
+    current_skill_duration = jnp.array(0)
     last_skill_index = 0
+    last_state = env_state
     last_obs = obsv
     should_terminate_skill = True
 
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = skill_selector(last_obs)
-            current_skill_duration = 0 # this isn't 0 since it could pick the same skill again.
+            curr_skill_index = single_skill_selector_zero(last_obs)
+            current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
-            current_skill_duration += 1
+            current_skill_duration = current_skill_duration + 1
         skill_vector = jax.nn.one_hot(curr_skill_index, config["MAX_NUM_SKILLS"])
         last_obs = jnp.concatenate([last_obs, skill_vector])
 
@@ -688,27 +719,32 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         action = pi.sample(seed=_rng)[0]
         rng, _rng = jax.random.split(rng)
         base_obs, env_state, reward_e, done, info = env.step(_rng, env_state, action, env_params)
-        
-        def get_termination_single(index, last_b_obs_s, b_obs_s, duration):
+        def get_termination_single(index, last_b_obs_s, b_obs_s, duration, done_val):
             terminate_fns = [terminate_harvest, terminate_craft, terminate_sustain]
-            return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration)
+            return jax.lax.switch(index, terminate_fns, last_b_obs_s, b_obs_s, duration, done_val)
 
-        should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration)
+        should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration, done)
 
         # Calculate active skill reward
         reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
-        def select_reward_single(index, last_b_obs_s, b_obs_s):
-            return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
+        def select_reward_single(index, prev_state, cur_state, done_val):
+            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
         
-        skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
+        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
 
+        # Count mobs nearby
+        mobs_nearby = count_mobs_nearby(base_obs)
+        # Check if adjacent to lava
+        lava_adjacent = is_adjacent_to_lava(base_obs)
         # Track skill and vital stats
         skill_trace.append(curr_skill_index)
-        health_trace.append(round(base_obs[health_idx] * 10.0))  # Convert to 0-10 range
-        food_trace.append(round(base_obs[food_idx] * 10.0))
-        drink_trace.append(round(base_obs[drink_idx] * 10.0))
-        energy_trace.append(round(base_obs[energy_idx] * 10.0))
+        health_trace.append(env_state.env_state.player_health)  # Direct access from state
+        food_trace.append(env_state.env_state.player_food)
+        drink_trace.append(env_state.env_state.player_drink)
+        energy_trace.append(env_state.env_state.player_energy)
         reward_trace.append(skill_reward)
+        mobs_nearby_trace.append(mobs_nearby)
+        lava_adjacent_trace.append(lava_adjacent)
         # if config["USE_WANDB"]:
         #     wandb.log({
         #         "eval/timestep": t,
@@ -716,13 +752,14 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         #     }, commit=False)
         last_skill_index = curr_skill_index
         last_obs = base_obs
+        last_state = env_state
         t += 1
         if hasattr(done, "item"):
             done = done.item()
     
     # Create combined subplot layout with all plots
     timesteps = list(range(len(skill_trace)))
-    fig, axes = plt.subplots(4, 2, figsize=(12, 16))
+    fig, axes = plt.subplots(5, 2, figsize=(12, 20))
     fig.suptitle(f'Agent Performance During Evaluation (Update {update_frac}%)', fontsize=16, y=0.98)
     
     # Skill plot (top left)
@@ -761,14 +798,31 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     axes[2, 1].grid(True, alpha=0.3)
     axes[2, 1].set_ylim(0, 10)
     
-    # Combined vital stats plot (bottom left)
-    axes[3, 0].plot(timesteps, health_trace, color='red', linewidth=2)
-    axes[3, 0].plot(timesteps, food_trace, color='green', linewidth=2)
-    axes[3, 0].plot(timesteps, drink_trace, color='cyan', linewidth=2)
-    axes[3, 0].plot(timesteps, energy_trace, color='orange', linewidth=2)
-    axes[3, 0].set_title('Combined Vital Stats')
+    # Mobs nearby plot (bottom left)
+    axes[3, 0].plot(timesteps, mobs_nearby_trace, color='brown', linewidth=2)
+    axes[3, 0].set_title('Mobs Nearby (3x3)')
     axes[3, 0].grid(True, alpha=0.3)
-    axes[3, 0].set_ylim(0, 10)
+    axes[3, 0].set_ylim(-0.1, 3.1)
+    axes[3, 0].set_yticks([0, 1, 2, 3])
+    
+    # Combined vital stats plot (bottom right)
+    axes[3, 1].plot(timesteps, health_trace, color='red', linewidth=2)
+    axes[3, 1].plot(timesteps, food_trace, color='green', linewidth=2)
+    axes[3, 1].plot(timesteps, drink_trace, color='cyan', linewidth=2)
+    axes[3, 1].plot(timesteps, energy_trace, color='orange', linewidth=2)
+    axes[3, 1].set_title('Combined Vital Stats')
+    axes[3, 1].grid(True, alpha=0.3)
+    axes[3, 1].set_ylim(0, 10)
+    
+    # Lava adjacent plot (fifth row left)
+    axes[4, 0].plot(timesteps, lava_adjacent_trace, color='red', linewidth=2)
+    axes[4, 0].set_title('Adjacent to Lava')
+    axes[4, 0].grid(True, alpha=0.3)
+    axes[4, 0].set_ylim(-0.1, 1.1)
+    axes[4, 0].set_yticks([0, 1])
+    
+    # Empty plot (fifth row right) - placeholder
+    axes[4, 1].axis('off')
     
     # Adjust layout with proper spacing
     plt.tight_layout()

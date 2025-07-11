@@ -47,6 +47,7 @@ HARVESTING_REWARD_WEIGHTS = jnp.array([
     20.0, # Diamond
     0.1,  # Sapling
 ], dtype=jnp.float32)
+HARVESTING_MULTIPLIER = 0.5
 
 CRAFTED_ITEM_INDICES = jnp.array([
     6,  # wood_pickaxe
@@ -56,6 +57,7 @@ CRAFTED_ITEM_INDICES = jnp.array([
     10, # stone_sword
     11, # iron_sword
 ])
+CRAFTING_MULTIPLIER = 2.5
 
 # Weights applied to the reward for crafting each corresponding item.
 # Higher weights encourage crafting more advanced items.
@@ -109,7 +111,7 @@ def get_inventory_slice(obs: jnp.ndarray) -> jnp.ndarray:
     return obs[..., start_idx:end_idx]
 
 @jax.jit
-def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> jnp.ndarray:
+def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, done: jnp.ndarray) -> jnp.ndarray:
     """
     Calculates a reward signal focused on harvesting raw materials in Craftax.
 
@@ -135,7 +137,7 @@ def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> 
     current_raw_materials = current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)] # Select first 6 items
 
     # Calculate the change in counts for each raw material
-    delta_materials = current_raw_materials - prev_raw_materials
+    delta_materials = (current_raw_materials - prev_raw_materials) / (prev_raw_materials + 1.0)
 
     # Only reward positive changes (i.e., increases in resources)
     # This prevents rewarding the agent for dropping items or using them in crafting (if that were possible here).
@@ -143,16 +145,19 @@ def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> 
 
     # Calculate the weighted reward
     # Multiply the positive change of each resource by its corresponding weight
-    weighted_reward = positive_delta_materials * HARVESTING_REWARD_WEIGHTS / 2.0
+    weighted_reward = positive_delta_materials * HARVESTING_REWARD_WEIGHTS #* HARVESTING_MULTIPLIER
 
     # Sum the weighted rewards for all resources to get the final scalar reward
     total_reward = jnp.sum(weighted_reward, axis=-1)
 
+    # Return 0 if done, otherwise return the calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    
     # Ensure the output is a scalar float32 array
-    return jnp.array(total_reward, dtype=jnp.float32)
+    return jnp.array(reward, dtype=jnp.float32)
 
 @jax.jit
-def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndarray) -> jnp.float32:
+def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndarray, done: jnp.ndarray) -> jnp.float32:
     """
     Calculates a reward signal focused on the crafting skill in Craftax.
 
@@ -218,30 +223,30 @@ def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndar
     # --- 3. Isolate Target Crafted Item Counts ---
     # Select only the counts of the items we want to reward (pickaxes, swords)
     # using the predefined indices.
-    prev_crafted_item_counts = prev_inventory_counts[CRAFTED_ITEM_INDICES]
+    # should 
+    prev_crafted_item_counts = jnp.minimum(prev_inventory_counts[CRAFTED_ITEM_INDICES], 1)
     current_crafted_item_counts = jnp.minimum(current_inventory_counts[CRAFTED_ITEM_INDICES], 1)  # Cap at 1
 
     # --- 4. Calculate Increase in Counts ---
     # Compute the difference between current and previous counts for target items.
     delta_counts = current_crafted_item_counts - prev_crafted_item_counts
 
-    # We only care about *increases* (crafting events), so zero out any negative
-    # or zero changes (e.g., item used, lost, or count unchanged).
-    increase_in_counts = jnp.maximum(0, delta_counts)
-
     # --- 5. Apply Weights and Sum ---
     # Multiply the increase in count for each item by its corresponding weight.
-    weighted_increase = increase_in_counts * CRAFTING_REWARD_WEIGHTS
+    weighted_increase = delta_counts * CRAFTING_REWARD_WEIGHTS * CRAFTING_MULTIPLIER
 
     # Sum the weighted increases across all target items to get the final reward.
-    reward = jnp.sum(weighted_increase) + entered_crafting_pos_reward
+    total_reward = jnp.sum(weighted_increase) #+ entered_crafting_pos_reward
 
+    # Return 0 if done, otherwise return the calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    
     # --- 6. Return Reward ---
     # Ensure the reward is a float32, a common type for RL rewards.
     return reward.astype(jnp.float32)
 
 @jax.jit
-def my_survival_reward_function(prev_obs, obs):
+def my_survival_reward_function(prev_obs, obs, done):
     """
     Calculates a reward signal focused on survival in the Craftax environment.
 
@@ -268,7 +273,7 @@ def my_survival_reward_function(prev_obs, obs):
     prev_food = round(prev_obs[food_idx] * 10.0)
     prev_drink = round(prev_obs[drink_idx] * 10.0)
     prev_energy = round(prev_obs[energy_idx] * 10.0)
-    intrinsic_stat_multiplier = 0.1
+    intrinsic_stat_multiplier = 0.2
 
     # --- Mob Proximity Penalty ---
     center_x, center_y = OBS_DIM[0] // 2, OBS_DIM[1] // 2
@@ -297,14 +302,14 @@ def my_survival_reward_function(prev_obs, obs):
 
     # 1. Health & Damage Penalty
     # Penalize taking damage (decrease in health)
-    reward = health - prev_health
-    reward += intrinsic_stat_multiplier * (food - prev_food)
-    reward += intrinsic_stat_multiplier * (drink - prev_drink)
-    reward += intrinsic_stat_multiplier * (energy - prev_energy)
+    reward = health - prev_health #- 0.1
+    reward += intrinsic_stat_multiplier * jnp.maximum(food - prev_food, 0.0)
+    reward += intrinsic_stat_multiplier * jnp.maximum(drink - prev_drink, 0.0)
+    reward += intrinsic_stat_multiplier * jnp.maximum(energy - prev_energy, 0.0)
     
-    reward += mob_proximity_penalty
+    #reward += mob_proximity_penalty
 
-    is_reset = jnp.logical_and(prev_health < 8.0, health == 9.0)
-    reward = jnp.where(is_reset, -10.0, reward)
+    # is_reset = jnp.logical_and(prev_health < 8.0, health == 9.0)
+    reward = jnp.where(done, -10.0, reward)
 
     return reward
