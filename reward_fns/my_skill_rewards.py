@@ -133,11 +133,11 @@ def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, don
     current_inventory = get_inventory_slice(current_obs) * 10.0
 
     # Select only the raw materials we care about for this skill
-    prev_raw_materials = prev_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)] # Select first 6 items
-    current_raw_materials = current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)] # Select first 6 items
+    prev_raw_materials = jnp.minimum(prev_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
+    current_raw_materials = jnp.minimum(current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
 
     # Calculate the change in counts for each raw material
-    delta_materials = (current_raw_materials - prev_raw_materials) / (prev_raw_materials + 1.0)
+    delta_materials = current_raw_materials - prev_raw_materials
 
     # Only reward positive changes (i.e., increases in resources)
     # This prevents rewarding the agent for dropping items or using them in crafting (if that were possible here).
@@ -231,12 +231,12 @@ def my_crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndar
     # Compute the difference between current and previous counts for target items.
     delta_counts = current_crafted_item_counts - prev_crafted_item_counts
 
-    # --- 5. Apply Weights and Sum ---
+    # --- 5. Apply Weights and Sum ---A
     # Multiply the increase in count for each item by its corresponding weight.
     weighted_increase = delta_counts * CRAFTING_REWARD_WEIGHTS * CRAFTING_MULTIPLIER
 
     # Sum the weighted increases across all target items to get the final reward.
-    total_reward = jnp.sum(weighted_increase) #+ entered_crafting_pos_reward
+    total_reward = jnp.sum(weighted_increase) + entered_crafting_pos_reward * CRAFTING_MULTIPLIER
 
     # Return 0 if done, otherwise return the calculated reward
     reward = jnp.where(done, 0.0, total_reward)

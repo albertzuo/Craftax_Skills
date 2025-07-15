@@ -43,7 +43,7 @@ from reward_fns.gemini_personality_rewards import (
     driven_reward_function,
     playful_reward_function,
 )
-from reward_fns.my_skill_rewards_state import (
+from reward_fns.my_skill_rewards import (
     my_harvesting_reward_fn,
     my_crafting_reward_fn,
     my_survival_reward_function,
@@ -76,6 +76,11 @@ from wrappers import (
     OptimisticResetVecEnvWrapper,
     BatchEnvWrapper,
     AutoResetEnvWrapper,
+    HealthWrapper,
+    HungerWrapper,
+    ThirstWrapper,
+    EnergyWrapper,
+    AllVitalsWrapper,
 )
 import matplotlib.pyplot as plt
 
@@ -114,6 +119,7 @@ def make_train(config):
     )
     env_params = env.default_params
 
+    env = EnergyWrapper(env)
     env = LogWrapper(env)
     if config["USE_OPTIMISTIC_RESETS"]:
         env = OptimisticResetVecEnvWrapper(
@@ -198,6 +204,101 @@ def make_train(config):
         skill_timesteps = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
         final_skill_timesteps = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
         current_skill_durations = jnp.zeros(config["NUM_ENVS"])  # Track current duration of active skill
+        damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # [thirst, hunger, energy, zombie, arrow, lava]
+        final_damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # Episode-end damage counters
+
+        # Helper function to detect damage sources
+        def detect_damage_sources(prev_state, current_state, prev_obs, current_obs, action, done):
+            """
+            Detect damage sources based on state changes and observations.
+            Returns array of shape (NUM_ENVS, 6) for [thirst, hunger, energy, zombie, arrow, lava]
+            """
+            # Extract health values
+            prev_health = prev_state.player_health
+            current_health = current_state.player_health
+            
+            # Count damage when health decreased OR when episode ended (instant death)
+            health_decreased = jnp.logical_or(current_health < prev_health, done)
+            
+            # Extract intrinsic values from observations 
+            # Observation structure: inventory + intrinsics + direction + misc + map
+            inventory_size = 12  # From renderer: 12 inventory items
+            intrinsics_start_idx = inventory_size
+            
+            # Current intrinsics (scaled 0-1, convert to 0-10)
+            # Order from renderer: health, food, drink, energy
+            current_food = jnp.round(current_obs[:, intrinsics_start_idx + 1] * 10.0)
+            current_drink = jnp.round(current_obs[:, intrinsics_start_idx + 2] * 10.0)
+            current_energy = jnp.round(current_obs[:, intrinsics_start_idx + 3] * 10.0)
+            
+            # Check for zero values (starvation conditions)
+            thirst_damage = jnp.logical_and(health_decreased, current_drink == 0)
+            hunger_damage = jnp.logical_and(health_decreased, current_food == 0)
+            energy_damage = jnp.logical_and(health_decreased, current_energy == 0)
+            
+            # Calculate map observation parameters
+            NUM_BLOCK_TYPES = len(BlockType)
+            NUM_MOB_TYPES = 4
+            all_map_flat_size = OBS_DIM[0] * OBS_DIM[1] * (NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+            
+            # Extract map observations
+            map_obs = current_obs[:, :all_map_flat_size]
+            map_obs = map_obs.reshape(config["NUM_ENVS"], OBS_DIM[0], OBS_DIM[1], NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+            
+            # Player is at center of observation
+            center_x, center_y = OBS_DIM[0] // 2, OBS_DIM[1] // 2
+            
+            # Check for zombie attacks (adjacent zombies)
+            zombie_idx = NUM_BLOCK_TYPES + 0  # Zombie is first mob type (index 0)
+            local_area_zombies = map_obs[:, center_x-1:center_x+2, center_y-1:center_y+2, zombie_idx]
+            nearby_zombies = jnp.sum(local_area_zombies, axis=(1, 2))
+            zombie_damage = jnp.logical_and(health_decreased, nearby_zombies > 0)
+            
+            # Check for arrow attacks (skeletons damage through arrows)
+            arrow_idx = NUM_BLOCK_TYPES + 3  # Arrow is fourth mob type (index 3)
+            local_area_arrows = map_obs[:, center_x-1:center_x+2, center_y-1:center_y+2, arrow_idx]
+            nearby_arrows = jnp.sum(local_area_arrows, axis=(1, 2))
+            arrow_damage = jnp.logical_and(health_decreased, nearby_arrows > 0)
+            
+            # Check for lava damage (instant death from stepping on lava)
+            lava_idx = BlockType.LAVA.value
+            # Extract previous map observation to check where lava was
+            prev_map_obs = prev_obs[:, :all_map_flat_size]
+            prev_map_obs = prev_map_obs.reshape(config["NUM_ENVS"], OBS_DIM[0], OBS_DIM[1], NUM_BLOCK_TYPES + NUM_MOB_TYPES)
+            
+            # Check if agent was adjacent to lava in previous observation and moved toward it
+            # Movement actions: 1=LEFT, 2=RIGHT, 3=UP, 4=DOWN (from Action enum)
+            lava_up = prev_map_obs[:, center_x-1, center_y, lava_idx]
+            lava_down = prev_map_obs[:, center_x+1, center_y, lava_idx]
+            lava_left = prev_map_obs[:, center_x, center_y-1, lava_idx]
+            lava_right = prev_map_obs[:, center_x, center_y+1, lava_idx]
+            
+            # Check if action moved toward lava and episode ended
+            moved_into_lava = jnp.logical_or(
+                jnp.logical_and(action == 3, lava_up > 0),      # moved up into lava
+                jnp.logical_or(
+                    jnp.logical_and(action == 4, lava_down > 0),    # moved down into lava
+                    jnp.logical_or(
+                        jnp.logical_and(action == 1, lava_left > 0),    # moved left into lava
+                        jnp.logical_and(action == 2, lava_right > 0)    # moved right into lava
+                    )
+                )
+            )
+            
+            lava_damage = jnp.logical_and(done, moved_into_lava)
+            
+            # Count all active damage sources (multiple sources can be active simultaneously)
+            damage_array = jnp.zeros((config["NUM_ENVS"], 6))
+            
+            # Set damage counters for all active sources
+            damage_array = damage_array.at[:, 0].set(thirst_damage.astype(jnp.int32))
+            damage_array = damage_array.at[:, 1].set(hunger_damage.astype(jnp.int32))
+            damage_array = damage_array.at[:, 2].set(energy_damage.astype(jnp.int32))
+            damage_array = damage_array.at[:, 3].set(zombie_damage.astype(jnp.int32))
+            damage_array = damage_array.at[:, 4].set(arrow_damage.astype(jnp.int32))
+            damage_array = damage_array.at[:, 5].set(lava_damage.astype(jnp.int32))
+            
+            return damage_array
 
         # TRAIN LOOP
         def _update_step(runner_state, unused):
@@ -212,6 +313,8 @@ def make_train(config):
                     skill_timesteps,
                     final_skill_timesteps,
                     current_skill_durations,
+                    damage_counters,
+                    final_damage_counters,
                     last_obs,
                     rng,
                     update_step,
@@ -242,7 +345,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(single_skill_selector_zero)(base_obsv)
+                new_skill_indices = jax.vmap(skill_selector)(base_obsv)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -264,12 +367,15 @@ def make_train(config):
                 discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
 
                 reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
-                def select_reward_single(index, prev_state, cur_state, done_val):
-                    return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+                # def select_reward_single(index, prev_state, cur_state, done_val):
+                #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
 
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
+                def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
+                    return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
+                
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv, done)
 
-                reward = reward_e#reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
+                reward = reward_i#reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -294,6 +400,14 @@ def make_train(config):
                 updated_final_skill_timesteps = final_skill_timesteps * (1 - done_expanded) + skill_proportions * done_expanded
                 updated_skill_timesteps = updated_skill_timesteps * (1 - done_expanded)
 
+                # Detect damage sources and update counters
+                damage_occurred = detect_damage_sources(prev_env_state.env_state, env_state.env_state, last_base_obsv, base_obsv, action, done)
+                updated_damage_counters = damage_counters + damage_occurred
+                
+                # Update final damage counters for completed episodes
+                updated_final_damage_counters = final_damage_counters * (1 - done_expanded) + updated_damage_counters * done_expanded
+                updated_damage_counters = updated_damage_counters * (1 - done_expanded)
+
                 transition = Transition(
                     done=done,
                     action=action,
@@ -316,6 +430,8 @@ def make_train(config):
                     updated_skill_timesteps,
                     updated_final_skill_timesteps,
                     current_skill_durations,  # Add to runner state
+                    updated_damage_counters,
+                    updated_final_damage_counters,
                     obsv, 
                     rng,
                     update_step,
@@ -335,6 +451,8 @@ def make_train(config):
                 skill_timesteps,
                 final_skill_timesteps,
                 current_skill_durations,  # Add to runner state
+                damage_counters,
+                final_damage_counters,
                 last_obs, 
                 rng,
                 update_step, 
@@ -497,7 +615,7 @@ def make_train(config):
             train_state = update_state[0]
 
 
-            _ , _, _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _ , _ , _ = runner_state
+            _ , _, _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _ = runner_state
             
             info_extended = traj_batch.info
             info_extended["final_intrinsic_rewards_skill_0"] = final_intrinsic_rewards_log[:, 0]
@@ -506,6 +624,12 @@ def make_train(config):
             info_extended["final_skill_timesteps_skill_0"] = final_skill_timesteps_log[:, 0]
             info_extended["final_skill_timesteps_skill_1"] = final_skill_timesteps_log[:, 1]
             info_extended["final_skill_timesteps_skill_2"] = final_skill_timesteps_log[:, 2]
+            info_extended["damage_thirst_total"] = final_damage_counters_log[:, 0]
+            info_extended["damage_hunger_total"] = final_damage_counters_log[:, 1]
+            info_extended["damage_energy_total"] = final_damage_counters_log[:, 2]
+            info_extended["damage_zombie_total"] = final_damage_counters_log[:, 3]
+            info_extended["damage_arrow_total"] = final_damage_counters_log[:, 4]
+            info_extended["damage_lava_total"] = final_damage_counters_log[:, 5]
 
 
             metric = jax.tree.map(
@@ -536,6 +660,12 @@ def make_train(config):
                     to_log["final_skill_timesteps_skill_0"] = metric["final_skill_timesteps_skill_0"]
                     to_log["final_skill_timesteps_skill_1"] = metric["final_skill_timesteps_skill_1"]
                     to_log["final_skill_timesteps_skill_2"] = metric["final_skill_timesteps_skill_2"]
+                    to_log["damage_thirst_total"] = metric["damage_thirst_total"]
+                    to_log["damage_hunger_total"] = metric["damage_hunger_total"]
+                    to_log["damage_energy_total"] = metric["damage_energy_total"]
+                    to_log["damage_zombie_total"] = metric["damage_zombie_total"]
+                    to_log["damage_arrow_total"] = metric["damage_arrow_total"]
+                    to_log["damage_lava_total"] = metric["damage_lava_total"]
                     batch_log(update_step, to_log, config)
 
                 jax.debug.callback(
@@ -553,6 +683,8 @@ def make_train(config):
                 skill_timesteps,
                 final_skill_timesteps,
                 current_skill_durations,  # Add to runner state
+                damage_counters,
+                final_damage_counters,
                 last_obs, 
                 rng,
                 update_step + 1,
@@ -570,6 +702,8 @@ def make_train(config):
             skill_timesteps,
             final_skill_timesteps,
             current_skill_durations,  # Add to runner state
+            damage_counters,
+            final_damage_counters,
             obsv, 
             _rng,
             0, 
@@ -638,6 +772,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     """
     
     env = make_craftax_env_from_name(config["ENV_NAME"], not config["USE_OPTIMISTIC_RESETS"])
+    env = EnergyWrapper(env)
     env = LogWrapper(env)
     env = AutoResetEnvWrapper(env)
     env_params = env.default_params
@@ -704,7 +839,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = single_skill_selector_zero(last_obs)
+            curr_skill_index = skill_selector(last_obs)
             current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
@@ -727,10 +862,12 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
 
         # Calculate active skill reward
         reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
-        def select_reward_single(index, prev_state, cur_state, done_val):
-            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+        # def select_reward_single(index, prev_state, cur_state, done_val):
+        #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+        def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
+            return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
         
-        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
+        skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, done)
 
         # Count mobs nearby
         mobs_nearby = count_mobs_nearby(base_obs)

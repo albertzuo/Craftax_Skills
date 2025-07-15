@@ -198,3 +198,108 @@ class LogWrapper(GymnaxWrapper):
         info["timestep"] = state.timestep
         info["returned_episode"] = done
         return obs, state, reward, done, info
+
+
+class HealthWrapper(GymnaxWrapper):
+    """Maintains player health at maximum (9)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
+        return self._env.reset(key, params)
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, key: chex.PRNGKey, state, action: Union[int, float], params=None):
+        obs, new_state, reward, done, info = self._env.step(key, state, action, params)
+        
+        # Set health to maximum (9)
+        new_state = new_state.replace(player_health=9)
+        
+        return obs, new_state, reward, done, info
+
+
+class HungerWrapper(GymnaxWrapper):
+    """Maintains player hunger at maximum (9)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
+        return self._env.reset(key, params)
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, key: chex.PRNGKey, state, action: Union[int, float], params=None):
+        obs, new_state, reward, done, info = self._env.step(key, state, action, params)
+        
+        # Set hunger to maximum (9)
+        new_state = new_state.replace(player_food=9)
+        
+        return obs, new_state, reward, done, info
+
+
+class ThirstWrapper(GymnaxWrapper):
+    """Maintains player thirst at maximum (9)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
+        return self._env.reset(key, params)
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, key: chex.PRNGKey, state, action: Union[int, float], params=None):
+        obs, new_state, reward, done, info = self._env.step(key, state, action, params)
+        
+        # Set thirst to maximum (9)
+        new_state = new_state.replace(player_drink=9)
+        
+        return obs, new_state, reward, done, info
+
+
+class EnergyWrapper(GymnaxWrapper):
+    """Maintains player energy at maximum (9)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
+        return self._env.reset(key, params)
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, key: chex.PRNGKey, state, action: Union[int, float], params=None):
+        obs, new_state, reward, done, info = self._env.step(key, state, action, params)
+        
+        # Set energy to maximum (9)
+        new_state = new_state.replace(player_energy=9)
+        
+        return obs, new_state, reward, done, info
+
+
+class AllVitalsWrapper(GymnaxWrapper):
+    """Maintains all player vitals (health, hunger, thirst, energy) at maximum (9)."""
+
+    def __init__(self, env):
+        super().__init__(env)
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def reset(self, key: chex.PRNGKey, params=None):
+        return self._env.reset(key, params)
+
+    @partial(jax.jit, static_argnums=(0, 4))
+    def step(self, key: chex.PRNGKey, state, action: Union[int, float], params=None):
+        obs, new_state, reward, done, info = self._env.step(key, state, action, params)
+        
+        # Set all vitals to maximum (9)
+        new_state = new_state.replace(
+            player_health=9,
+            player_food=9,
+            player_drink=9,
+            player_energy=9
+        )
+        
+        return obs, new_state, reward, done, info
