@@ -46,7 +46,10 @@ from reward_fns.gemini_personality_rewards import (
 from reward_fns.my_skill_rewards import (
     my_harvesting_reward_fn,
     my_crafting_reward_fn,
-    my_survival_reward_function,
+    my_survival_reward_fn,
+    my_harvesting_reward_fn_v2,
+    my_crafting_reward_fn_v2,
+    my_survival_reward_fn_v2,
 )
 from meta_policy.skill_training import (
     skill_selector,
@@ -186,7 +189,7 @@ def make_train(config):
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
-        obsv, env_state = env.reset(_rng, env_params)
+        obs, env_state = env.reset(_rng, env_params)
 
         rng, _rng = jax.random.split(rng)
         # skill_indices = jax.random.randint(
@@ -195,10 +198,10 @@ def make_train(config):
         skill_indices = jnp.full((config["NUM_ENVS"],), 0, dtype=jnp.int32) # init to skill 0
         skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
 
-        def augment_obs_with_skill(obsv, skill_vec):
-            return jnp.concatenate([obsv, skill_vec], axis=-1)
+        def augment_obs_with_skill(obs, skill_vec):
+            return jnp.concatenate([obs, skill_vec], axis=-1)
 
-        obsv = jax.vmap(augment_obs_with_skill)(obsv, skill_vectors)
+        obs = jax.vmap(augment_obs_with_skill)(obs, skill_vectors)
         intrinsic_rewards = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
         final_intrinsic_rewards = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
         skill_timesteps = jnp.zeros((config["NUM_ENVS"], config["MAX_NUM_SKILLS"]))
@@ -328,7 +331,7 @@ def make_train(config):
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
                 prev_env_state = env_state  # Save previous state for reward calculation
-                base_obsv, env_state, reward_e, done, info = env.step(
+                base_obs, env_state, reward_e, done, info = env.step(
                     _rng, env_state, action, env_params
                 )
 
@@ -341,11 +344,11 @@ def make_train(config):
                 
                 # Check termination conditions
                 should_terminate = jax.vmap(get_termination_single)(
-                    last_skill_indices, last_obs[:, :-config["MAX_NUM_SKILLS"]], base_obsv, current_skill_durations, done
+                    last_skill_indices, last_obs[:, :-config["MAX_NUM_SKILLS"]], base_obs, current_skill_durations, done
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(skill_selector)(base_obsv)
+                new_skill_indices = jax.vmap(skill_selector)(base_obs)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -356,24 +359,24 @@ def make_train(config):
                 )
                 
                 skill_vectors = jax.nn.one_hot(skill_indices, config["MAX_NUM_SKILLS"])
-                obsv = jax.vmap(augment_obs_with_skill)(base_obsv, skill_vectors)
-                last_base_obsv = last_obs[:, :-config["MAX_NUM_SKILLS"]]
+                obs = jax.vmap(augment_obs_with_skill)(base_obs, skill_vectors)
+                last_base_obs = last_obs[:, :-config["MAX_NUM_SKILLS"]]
 
                 # Calculate discriminator reward
-                discriminator_output = discriminator.apply(discriminator_state.params, last_base_obsv)
+                discriminator_output = discriminator.apply(discriminator_state.params, last_base_obs)
                 logq_z = discriminator_output.log_prob(last_skill_indices)  # Log probability of true skill
                 log_p_z = -jnp.log(config["MAX_NUM_SKILLS"])  # Log probability under uniform prior
                 # discriminator_reward = (logq_z - log_p_z) * config["DIAYN_REWARD_COEF"]
                 discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
 
-                reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
+                reward_fns_single = [my_harvesting_reward_fn_v2, my_crafting_reward_fn_v2, my_survival_reward_fn_v2]
                 # def select_reward_single(index, prev_state, cur_state, done_val):
                 #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
 
-                def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
-                    return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
+                def select_reward_single(index, last_b_obs_s, b_obs_s, done_val, prev_state, cur_state):
+                    return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val, prev_state, cur_state)
                 
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obsv, base_obsv, done)
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs, done, prev_env_state.env_state, env_state.env_state)
 
                 reward = reward_i#reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
@@ -401,7 +404,7 @@ def make_train(config):
                 updated_skill_timesteps = updated_skill_timesteps * (1 - done_expanded)
 
                 # Detect damage sources and update counters
-                damage_occurred = detect_damage_sources(prev_env_state.env_state, env_state.env_state, last_base_obsv, base_obsv, action, done)
+                damage_occurred = detect_damage_sources(prev_env_state.env_state, env_state.env_state, last_base_obs, base_obs, action, done)
                 updated_damage_counters = damage_counters + damage_occurred
                 
                 # Update final damage counters for completed episodes
@@ -417,7 +420,7 @@ def make_train(config):
                     reward_e=reward_e,
                     log_prob=log_prob, 
                     obs=last_obs,
-                    next_obs=obsv,
+                    next_obs=obs,
                     info=info,
                 )
 
@@ -432,7 +435,7 @@ def make_train(config):
                     current_skill_durations,  # Add to runner state
                     updated_damage_counters,
                     updated_final_damage_counters,
-                    obsv, 
+                    obs, 
                     rng,
                     update_step,
                 )
@@ -704,7 +707,7 @@ def make_train(config):
             current_skill_durations,  # Add to runner state
             damage_counters,
             final_damage_counters,
-            obsv, 
+            obs, 
             _rng,
             0, 
         )
@@ -819,7 +822,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         return adjacent_lava > 0
 
     rng = jax.random.PRNGKey(config["SEED"] + update_step)
-    obsv, env_state = env.reset(rng, env_params)
+    obs, env_state = env.reset(rng, env_params)
     done = False
     skill_trace = []
     health_trace = []
@@ -833,7 +836,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     current_skill_duration = jnp.array(0)
     last_skill_index = 0
     last_state = env_state
-    last_obs = obsv
+    last_obs = obs
     should_terminate_skill = True
 
     while not done and t < 1000:
@@ -861,7 +864,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration, done)
 
         # Calculate active skill reward
-        reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_function]
+        reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
         # def select_reward_single(index, prev_state, cur_state, done_val):
         #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
         def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):

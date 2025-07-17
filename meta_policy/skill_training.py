@@ -41,7 +41,6 @@ INV_IRON_PICKAXE = 8
 INV_WOOD_SWORD = 9
 INV_STONE_SWORD = 10
 INV_IRON_SWORD = 11
-# Swords are indices 9, 10, 11 - not used in this simple policy's crafting logic
 
 # --- Intrinsic Stat Indices (assuming the order from render_craftax_symbolic) ---
 # Relative to the start of the intrinsics slice
@@ -131,12 +130,12 @@ def skill_selector(obs: jnp.ndarray) -> SkillID:
 
     # Prioritize crafting better tools if materials are available and tool isn't owned
     should_craft_iron_pick = can_craft_iron_pick & ~has_iron_pick
-    should_craft_stone_pick = can_craft_stone_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for iron
-    should_craft_wood_pick = can_craft_wood_pick & ~has_wood_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for stone/iron
+    should_craft_stone_pick = can_craft_stone_pick & ~has_stone_pick
+    should_craft_wood_pick = can_craft_wood_pick & ~has_wood_pick
 
     should_craft_iron_sword = can_craft_iron_sword & ~has_iron_sword
-    should_craft_stone_sword = can_craft_stone_sword & ~has_stone_sword & ~should_craft_iron_sword
-    should_craft_wood_sword = can_craft_wood_sword & ~has_wood_sword & ~has_stone_sword & ~should_craft_iron_sword
+    should_craft_stone_sword = can_craft_stone_sword & ~has_stone_sword
+    should_craft_wood_sword = can_craft_wood_sword & ~has_wood_sword
 
     craft_needed = should_craft_wood_pick | should_craft_stone_pick | should_craft_iron_pick | \
                    should_craft_wood_sword | should_craft_stone_sword | should_craft_iron_sword
@@ -596,7 +595,7 @@ def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_ski
     max_duration_reached = current_skill_duration >= 1
 
     # Terminate if max duration reached AND either a new tool was crafted or all tools are present
-    should_terminate = max_duration_reached #& (new_tool_crafted | all_tools_present)
+    should_terminate = max_duration_reached & (new_tool_crafted | all_tools_present)
     
     return jnp.logical_or(done, should_terminate)
 
