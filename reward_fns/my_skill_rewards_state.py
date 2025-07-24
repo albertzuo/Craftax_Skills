@@ -6,31 +6,31 @@ from craftax.craftax_classic.envs.craftax_state import EnvState
 # Reward weights for harvesting different materials
 
 HARVESTING_REWARD_WEIGHTS = jnp.array([
-    0.5,  # Wood
-    2.0,  # Stone
-    5.0,  # Coal
-    10.0,  # Iron
-    20.0, # Diamond
-    0.1,  # Sapling
+    0.0,  # Wood
+    0.0,  # Stone
+    1.0,  # Coal
+    1.0,  # Iron
+    0.0, # Diamond
+    0.0,  # Sapling
 ], dtype=jnp.float32)
-HARVESTING_MULTIPLIER = 0.5
+HARVESTING_MULTIPLIER = 1.0
 
-CRAFTING_MULTIPLIER = 2.5
+CRAFTING_MULTIPLIER = 1.0
 
 # Weights applied to the reward for crafting each corresponding item.
 # Higher weights encourage crafting more advanced items.
 # Order: [wood_pickaxe, stone_pickaxe, iron_pickaxe, wood_sword, stone_sword, iron_sword]
 CRAFTING_REWARD_WEIGHTS = jnp.array([
-    2.0,  # Reward for wood_pickaxe
-    10.0,  # Reward for stone_pickaxe
-    20.0,  # Reward for iron_pickaxe
-    2.0,  # Reward for wood_sword
-    10.0,  # Reward for stone_sword
-    20.0,  # Reward for iron_sword
+    1.0,  # Reward for wood_pickaxe
+    1.0,  # Reward for stone_pickaxe
+    1.0,  # Reward for iron_pickaxe
+    0.0,  # Reward for wood_sword
+    0.0,  # Reward for stone_sword
+    0.0,  # Reward for iron_sword
 ])
 
 @jax.jit
-def my_harvesting_reward_fn(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.ndarray:
+def my_harvesting_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.ndarray:
     """
     Calculates a reward signal focused on harvesting raw materials in Craftax.
 
@@ -86,7 +86,7 @@ def my_harvesting_reward_fn(prev_state: EnvState, current_state: EnvState, done:
     return jnp.array(reward, dtype=jnp.float32)
 
 @jax.jit
-def my_crafting_reward_fn(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
+def my_crafting_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
     """
     Calculates a reward signal focused on the crafting skill in Craftax.
 
@@ -123,47 +123,6 @@ def my_crafting_reward_fn(prev_state: EnvState, current_state: EnvState, done: j
         current_state.inventory.iron_sword
     ], dtype=jnp.int32)
 
-    # --- 2. Check Crafting Position ---
-    crafting_table_idx = BlockType.CRAFTING_TABLE.value
-    furnace_idx = BlockType.FURNACE.value
-    
-    # Get player position from state
-    player_x, player_y = current_state.player_position[0], current_state.player_position[1]
-    prev_player_x, prev_player_y = prev_state.player_position[0], prev_state.player_position[1]
-    
-    # Check 3x3 area around player for crafting table and furnace
-    # Use dynamic_slice for JAX compatibility with dynamic indices
-    current_local_area = jax.lax.dynamic_slice(
-        current_state.map, 
-        (player_x-1, player_y-1), 
-        (3, 3)
-    )
-    is_near_crafting_table = jnp.any(current_local_area == crafting_table_idx)
-    is_near_furnace = jnp.any(current_local_area == furnace_idx)
-    is_in_iron_crafting_pos = jnp.logical_and(is_near_crafting_table, is_near_furnace)
-
-    prev_local_area = jax.lax.dynamic_slice(
-        prev_state.map, 
-        (prev_player_x-1, prev_player_y-1), 
-        (3, 3)
-    )
-    prev_is_near_crafting_table = jnp.any(prev_local_area == crafting_table_idx)
-    prev_is_near_furnace = jnp.any(prev_local_area == furnace_idx)
-    prev_is_in_iron_crafting_pos = jnp.logical_and(prev_is_near_crafting_table, prev_is_near_furnace)
-
-    # Reward for entering crafting position
-    entered_crafting_pos_reward = jnp.where(
-        jnp.logical_and(jnp.logical_not(prev_is_in_iron_crafting_pos), is_in_iron_crafting_pos),
-        0.5,
-        0.0
-    )
-
-    entered_crafting_pos_reward += jnp.where(
-        jnp.logical_and(prev_is_in_iron_crafting_pos, jnp.logical_not(is_in_iron_crafting_pos)),
-        -0.5,
-        0.0
-    )
-
     # --- 3. Isolate Target Crafted Item Counts ---
     # Cap counts at 1 for reward calculation
     prev_crafted_item_counts = jnp.minimum(prev_crafted_items, 1)
@@ -178,7 +137,7 @@ def my_crafting_reward_fn(prev_state: EnvState, current_state: EnvState, done: j
     weighted_increase = delta_counts * CRAFTING_REWARD_WEIGHTS * CRAFTING_MULTIPLIER
 
     # Sum the weighted increases across all target items to get the final reward.
-    total_reward = jnp.sum(weighted_increase) #+ entered_crafting_pos_reward
+    total_reward = jnp.sum(weighted_increase)
 
     # Return 0 if done, otherwise return the calculated reward
     reward = jnp.where(done, 0.0, total_reward)
@@ -188,7 +147,7 @@ def my_crafting_reward_fn(prev_state: EnvState, current_state: EnvState, done: j
     return reward.astype(jnp.float32)
 
 @jax.jit
-def my_survival_reward_function(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
+def my_survival_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
     """
     Calculates a reward signal focused on survival in the Craftax environment.
 

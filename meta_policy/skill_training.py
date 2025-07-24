@@ -595,7 +595,7 @@ def terminate_craft(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_ski
     max_duration_reached = current_skill_duration >= 1
 
     # Terminate if max duration reached AND either a new tool was crafted or all tools are present
-    should_terminate = max_duration_reached & (new_tool_crafted | all_tools_present)
+    should_terminate = max_duration_reached #& (new_tool_crafted | all_tools_present)
     
     return jnp.logical_or(done, should_terminate)
 
@@ -609,10 +609,10 @@ def terminate_sustain(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, current_s
     food_idx = intrinsics_start_idx + 1
     drink_idx = intrinsics_start_idx + 2
     energy_idx = intrinsics_start_idx + 3
-    health_safe = current_obs[health_idx] >= 0.6  # 70% of max health
-    food_safe = current_obs[food_idx] >= 0.6      # 60% of max food
-    drink_safe = current_obs[drink_idx] >= 0.6    # 60% of max drink
-    energy_safe = current_obs[energy_idx] >= 0.6  # 60% of max energy
+    health_safe = current_obs[health_idx] >= 0.5  
+    food_safe = current_obs[food_idx] >= 0.5      
+    drink_safe = current_obs[drink_idx] >= 0.5    
+    energy_safe = current_obs[energy_idx] >= 0.5  
 
     # All stats are safe
     stats_safe = jnp.logical_and(

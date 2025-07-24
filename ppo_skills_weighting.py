@@ -51,14 +51,7 @@ from reward_fns.my_skill_rewards import (
     my_crafting_reward_fn_v2,
     my_survival_reward_fn_v2,
 )
-from reward_fns.my_skill_rewards_state import (
-    my_harvesting_reward_fn_state,
-    my_crafting_reward_fn_state,
-    my_survival_reward_fn_state,
-)
-from reward_fns.my_ppo_skill_rewards import (
-    configurable_achievement_reward_fn,
-)
+from reward_fns.my_weighted_skill_rewards import calculate_all_skill_rewards
 from meta_policy.skill_training import (
     skill_selector,
     # skill_selector_v2,
@@ -374,24 +367,28 @@ def make_train(config):
                 # discriminator_output = discriminator.apply(discriminator_state.params, last_base_obs)
                 # logq_z = discriminator_output.log_prob(last_skill_indices)  # Log probability of true skill
                 # log_p_z = -jnp.log(config["MAX_NUM_SKILLS"])  # Log probability under uniform prior
-                # discriminator_reward = (logq_z - log_p_z) * config["DIAYN_REWARD_COEF"]
                 # discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
 
-                # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
-                # def select_reward_single(index, prev_obs, cur_obs, done_val):
-                #     return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs, done_val)
-                # reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs, done)
-
-                # reward_fns_single = [my_harvesting_reward_fn_v2, my_crafting_reward_fn_v2, my_survival_reward_fn_v2]
-                # def select_reward_single(index, last_b_obs_s, b_obs_s, done_val, prev_state, cur_state):
-                #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val, prev_state, cur_state)
-                # reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs, done, prev_env_state.env_state, env_state.env_state)
-
-                reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
-                # reward_fns_single = [configurable_achievement_reward_fn]
-                def select_reward_single(index, prev_state, cur_state, done_val):
-                    return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
+                # Calculate all skill rewards using the combined function
+                all_rewards_tuples = jax.vmap(calculate_all_skill_rewards)(last_base_obs, base_obs, done)
+                harvest_rewards, craft_rewards, survival_rewards = all_rewards_tuples
+                
+                # Apply skill-based weighting: active skill gets 1.0, others get 0.2
+                active_weight = 1.0
+                inactive_weight = 0.2
+                
+                # Create weighted sum based on active skill using switch
+                def weighted_reward_single(skill_index, harvest_r, craft_r, survival_r):
+                    return jax.lax.switch(
+                        skill_index,
+                        [
+                            lambda: harvest_r * active_weight + craft_r * inactive_weight + survival_r * inactive_weight,
+                            lambda: harvest_r * inactive_weight + craft_r * active_weight + survival_r * inactive_weight,
+                            lambda: harvest_r * inactive_weight + craft_r * inactive_weight + survival_r * active_weight
+                        ]
+                    )
+                
+                reward_i = jax.vmap(weighted_reward_single)(last_skill_indices, harvest_rewards, craft_rewards, survival_rewards)
 
                 reward = reward_i#reward_i#reward_i + reward_e#+ discriminator_reward #+ reward_e
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
@@ -878,23 +875,23 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
 
         should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration, done)
 
-        # Calculate active skill reward
-        # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
-        # def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
-        #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
-        # skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, done)
-
-        reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
-        def select_reward_single(index, prev_state, cur_state, done_val):
-            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
-
-        # reward_fns_single = [configurable_achievement_reward_fn]
-        # def select_reward_single(index, prev_state, cur_state, done_val):
-        #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-        # skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
+        # Calculate weighted multi-skill reward
+        prev_obs_single = last_obs[:-config["MAX_NUM_SKILLS"]]
+        harvest_reward, craft_reward, survival_reward = calculate_all_skill_rewards(prev_obs_single, base_obs, done)
         
+        # Apply skill-based weighting: active skill gets 1.0, others get 0.2
+        active_weight = 1.0
+        inactive_weight = 0.2
         
+        # Create weighted sum based on active skill
+        skill_reward = jax.lax.switch(
+            curr_skill_index,
+            [
+                lambda: harvest_reward * active_weight + craft_reward * inactive_weight + survival_reward * inactive_weight,
+                lambda: harvest_reward * inactive_weight + craft_reward * active_weight + survival_reward * inactive_weight,
+                lambda: harvest_reward * inactive_weight + craft_reward * inactive_weight + survival_reward * active_weight
+            ]
+        )
 
         # Count mobs nearby
         mobs_nearby = count_mobs_nearby(base_obs)

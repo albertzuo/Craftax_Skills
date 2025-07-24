@@ -134,11 +134,11 @@ def my_harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray, don
     current_inventory = get_inventory_slice(current_obs) * 10.0
 
     # Select only the raw materials we care about for this skill
-    prev_raw_materials = jnp.minimum(prev_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
-    current_raw_materials = jnp.minimum(current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
+    # prev_raw_materials = jnp.minimum(prev_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
+    # current_raw_materials = jnp.minimum(current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)], 1) # Select first 6 items
 
     # Calculate the change in counts for each raw material
-    delta_materials = current_raw_materials - prev_raw_materials
+    delta_materials = current_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)] - prev_inventory[..., :len(HARVESTING_REWARD_WEIGHTS)]#current_raw_materials - prev_raw_materials
 
     # Only reward positive changes (i.e., increases in resources)
     # This prevents rewarding the agent for dropping items or using them in crafting (if that were possible here).
