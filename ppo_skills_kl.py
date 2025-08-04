@@ -24,7 +24,6 @@ from orbax.checkpoint import (
 
 from logz.batch_logging import batch_log, create_log_dict
 # from models.diayn_ac import DiaynAc
-from models.discrim import Discriminator
 from models.actor_critic import (
     ActorCritic,
     ActorCriticConv,
@@ -160,19 +159,11 @@ def make_train(config):
                 env.action_space(env_params).n, config["LAYER_SIZE"]
             )
         
-        discriminator = Discriminator(config["MAX_NUM_SKILLS"], config["LAYER_SIZE"])
-
         rng, _rng = jax.random.split(rng)
         init_x = jnp.zeros(
             (1, env.observation_space(env_params).shape[0] + config["MAX_NUM_SKILLS"])
         )
         network_params = network.init(_rng, init_x)
-        
-        init_discriminator_x = jnp.zeros(   
-            (1, env.observation_space(env_params).shape[0])
-        )
-        rng, _rng = jax.random.split(rng)
-        discriminator_params = discriminator.init(_rng, init_discriminator_x)
         
         if config["ANNEAL_LR"]:
             tx = optax.chain(
@@ -187,12 +178,6 @@ def make_train(config):
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
-            tx=tx,
-        )
-        
-        discriminator_state = TrainState.create(
-            apply_fn=discriminator.apply,
-            params=discriminator_params,
             tx=tx,
         )
 
@@ -218,6 +203,9 @@ def make_train(config):
         current_skill_durations = jnp.zeros(config["NUM_ENVS"])  # Track current duration of active skill
         damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # [thirst, hunger, energy, zombie, arrow, lava]
         final_damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # Episode-end damage counters
+        
+        # KL penalty state  
+        frozen_log_prob = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]))
 
         # Helper function to detect damage sources
         def detect_damage_sources(prev_state, current_state, prev_obs, current_obs, action, done):
@@ -318,7 +306,6 @@ def make_train(config):
             def _env_step(runner_state, unused):
                 (
                     train_state,
-                    discriminator_state,
                     env_state,
                     intrinsic_rewards,
                     final_intrinsic_rewards,
@@ -330,6 +317,7 @@ def make_train(config):
                     last_obs,
                     rng,
                     update_step,
+                    frozen_log_prob,
                 ) = runner_state
 
                 rng, _rng = jax.random.split(rng)
@@ -371,13 +359,6 @@ def make_train(config):
                 obs = jax.vmap(augment_obs_with_skill)(base_obs, skill_vectors)
                 last_base_obs = last_obs[:, :-config["MAX_NUM_SKILLS"]]
 
-                # Calculate discriminator reward
-                # discriminator_output = discriminator.apply(discriminator_state.params, last_base_obs)
-                # logq_z = discriminator_output.log_prob(last_skill_indices)  # Log probability of true skill
-                # log_p_z = -jnp.log(config["MAX_NUM_SKILLS"])  # Log probability under uniform prior
-                # discriminator_reward = (logq_z - log_p_z) * config["DIAYN_REWARD_COEF"]
-                # discriminator_reward = jnp.clip(logq_z - log_p_z, -10.0, 1.1) * config["DIAYN_REWARD_COEF"]
-
                 # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
                 # def select_reward_single(index, prev_obs, cur_obs, done_val):
                 #     return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs, done_val)
@@ -394,10 +375,11 @@ def make_train(config):
                 def select_reward_single(index, prev_state, cur_state, done_val):
                     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
                 reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
-
+                reward_e_subset = jax.vmap(configurable_achievement_reward_fn)(prev_env_state.env_state, env_state.env_state, done)
                 # Switch from reward_e (first 20%) to reward_i (remaining 80%)
-                reward_switch_threshold = config["NUM_UPDATES"] * 0.2
-                reward = jnp.where(update_step < reward_switch_threshold, reward_e, reward_i)
+                # reward_switch_threshold = config["NUM_UPDATES"] * 0.5
+                # reward = jnp.where(update_step < reward_switch_threshold, reward_i, reward_e_subset)
+                reward = reward_i #+ reward_e_subset
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -445,7 +427,6 @@ def make_train(config):
 
                 runner_state = (
                     train_state,
-                    discriminator_state,
                     env_state,
                     updated_intrinsic_rewards,
                     updated_final_intrinsic_rewards,
@@ -457,6 +438,7 @@ def make_train(config):
                     obs, 
                     rng,
                     update_step,
+                    frozen_log_prob,
                 )
                 return runner_state, transition
 
@@ -466,7 +448,6 @@ def make_train(config):
 
             (
                 train_state,
-                discriminator_state,
                 env_state,
                 intrinsic_rewards,
                 final_intrinsic_rewards,
@@ -477,7 +458,8 @@ def make_train(config):
                 final_damage_counters,
                 last_obs, 
                 rng,
-                update_step, 
+                update_step,
+                frozen_log_prob,
             ) = runner_state
 
 
@@ -512,8 +494,7 @@ def make_train(config):
 
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
-                def _update_minbatch(combined_state, batch_info):
-                    train_state, discriminator_state = combined_state
+                def _update_minbatch(train_state, batch_info):
                     traj_batch, advantages, targets = batch_info
 
                     # Policy/value network
@@ -548,6 +529,31 @@ def make_train(config):
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
+                        # CALCULATE KL PENALTY WITH FROZEN REFERENCE
+                        # reward_switch_threshold = config["NUM_UPDATES"] * 0.5
+                        # should_freeze = (update_step >= reward_switch_threshold) & jnp.all(frozen_log_prob == 0.0)
+                        
+                        # # Freeze log_prob once when hitting threshold
+                        # frozen_log_prob = jnp.where(should_freeze, traj_batch.log_prob, frozen_log_prob)
+                        
+                        # def forward_kl(log_prob, old_log_prob):
+                        #     return jnp.maximum(0.0, log_prob - old_log_prob).mean()
+                        
+                        # def reverse_kl(log_prob, old_log_prob):
+                        #     return jnp.maximum(0.0, old_log_prob - log_prob).mean()
+                        
+                        # kl_penalty = jax.lax.cond(
+                        #     config["USE_FORWARD_KL"],
+                        #     forward_kl,
+                        #     reverse_kl,
+                        #     log_prob,
+                        #     frozen_log_prob
+                        # )
+                        
+                        # # Add KL penalty to actor loss only after reward switch threshold
+                        # kl_coeff = jnp.where(update_step < reward_switch_threshold, 0.0, config["KL_COEF"])
+                        # loss_actor = loss_actor + kl_coeff * kl_penalty
+                        
                         total_loss = (
                             loss_actor
                             + config["VF_COEF"] * value_loss
@@ -555,35 +561,16 @@ def make_train(config):
                         )
                         return total_loss, (value_loss, loss_actor, entropy)
 
-                    # Discriminator network
-                    def _discriminator_loss_fn(params, traj_batch):
-                        # Extract skill indices from the previous timestep's observations
-                        skill_indices = jnp.argmax(traj_batch.obs[:, -config["MAX_NUM_SKILLS"]:], axis=-1)
-                        # Use the current observation (without skill encoding) to predict the previous skill
-                        base_obs = traj_batch.next_obs[:, :-config["MAX_NUM_SKILLS"]]
-                        discriminator_output = discriminator.apply(params, base_obs)
-                        discriminator_loss = -discriminator_output.log_prob(skill_indices).mean()
-                        return discriminator_loss
-
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
                     total_loss, grads = grad_fn(
                         train_state.params, traj_batch, advantages, targets
                     )
                     train_state = train_state.apply_gradients(grads=grads)
 
-                    # Update discriminator network
-                    discriminator_grad_fn = jax.value_and_grad(_discriminator_loss_fn)
-                    discriminator_loss, discriminator_grads = discriminator_grad_fn(
-                        discriminator_state.params, traj_batch
-                    )
-                    discriminator_state = discriminator_state.apply_gradients(grads=discriminator_grads)
-
-                    losses = (total_loss, discriminator_loss)
-                    return (train_state, discriminator_state), losses
+                    return train_state, total_loss
 
                 (
                     train_state,
-                    discriminator_state,
                     traj_batch,
                     advantages,
                     targets,
@@ -608,22 +595,20 @@ def make_train(config):
                     ),
                     shuffled_batch,
                 )
-                (train_state, discriminator_state), losses = jax.lax.scan(
-                    _update_minbatch, (train_state, discriminator_state), minibatches
+                train_state, loss = jax.lax.scan(
+                    _update_minbatch, train_state, minibatches
                 )
                 update_state = (
                     train_state,
-                    discriminator_state,
                     traj_batch,
                     advantages,
                     targets,
                     rng,
                 )
-                return update_state, losses
+                return update_state, loss
 
             update_state = (
                 train_state,
-                discriminator_state,
                 traj_batch,
                 advantages,
                 targets,
@@ -637,7 +622,7 @@ def make_train(config):
             train_state = update_state[0]
 
 
-            _ , _, _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _ = runner_state
+            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _, _ = runner_state
             
             info_extended = traj_batch.info
             info_extended["final_intrinsic_rewards_skill_0"] = final_intrinsic_rewards_log[:, 0]
@@ -698,7 +683,6 @@ def make_train(config):
 
             runner_state = (
                 train_state,
-                discriminator_state,
                 env_state,
                 intrinsic_rewards,
                 final_intrinsic_rewards,
@@ -710,6 +694,7 @@ def make_train(config):
                 last_obs, 
                 rng,
                 update_step + 1,
+                frozen_log_prob,
             )
 
             return runner_state, metric
@@ -717,7 +702,6 @@ def make_train(config):
         rng, _rng = jax.random.split(rng)
         runner_state = (
             train_state,
-            discriminator_state,
             env_state,
             intrinsic_rewards,
             final_intrinsic_rewards,
@@ -728,7 +712,8 @@ def make_train(config):
             final_damage_counters,
             obs, 
             _rng,
-            0, 
+            0,
+            frozen_log_prob,
         )
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
@@ -1038,6 +1023,8 @@ if __name__ == "__main__":
     parser.add_argument("--clip_eps", type=float, default=0.2)
     parser.add_argument("--ent_coef", type=float, default=0.01)
     parser.add_argument("--vf_coef", type=float, default=0.5)
+    parser.add_argument("--kl_coef", type=float, default=0.05)
+    parser.add_argument("--use_forward_kl", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--activation", type=str, default="tanh")
     parser.add_argument(
@@ -1061,7 +1048,6 @@ if __name__ == "__main__":
 
     # SKILLS
     parser.add_argument("--max_num_skills", type=int, default=3, help="Number of distinct skills (harvest, craft, sustain)") # Default to 3
-    parser.add_argument("--diayn_reward_coef", type=float, default=0.1, help="Coefficient for the DIAYN discriminator reward")
 
     args, rest_args = parser.parse_known_args(sys.argv[1:])
     if rest_args:

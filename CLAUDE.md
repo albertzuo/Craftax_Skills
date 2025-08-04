@@ -46,6 +46,18 @@ python ppo.py --train_icm --use_e3b --icm_reward_coeff 0  # E3B
 python analysis/view_ppo_skills_agent.py --path wandb/run-xxx/files
 ```
 
+### Wandb Sweeps
+```bash
+# Create and run a learning rate sweep
+wandb sweep sweep_config.yaml  # Returns sweep ID
+wandb agent <sweep_id>         # Run sweep agent (can run multiple agents in parallel)
+
+# Example sweep for learning rates
+wandb sweep sweep_config.yaml
+# Copy the returned sweep ID (e.g., username/project/sweep_id)
+wandb agent username/project/sweep_id
+```
+
 ## Code Architecture
 
 ### Core Training Pipeline

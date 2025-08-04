@@ -6,16 +6,18 @@ from craftax.craftax_classic.envs.craftax_state import EnvState
 # Reward weights for harvesting different materials
 
 HARVESTING_REWARD_WEIGHTS = jnp.array([
-    0.0,  # Wood
-    0.0,  # Stone
+    1.0,  # Wood
+    1.0,  # Stone
     1.0,  # Coal
     1.0,  # Iron
-    0.0, # Diamond
+    1.0, # Diamond
     0.0,  # Sapling
 ], dtype=jnp.float32)
 HARVESTING_MULTIPLIER = 1.0
 
-CRAFTING_MULTIPLIER = 1.0
+CRAFTING_MULTIPLIER = 2.0
+
+SURVIVAL_MULTIPLIER = 0.1
 
 # Weights applied to the reward for crafting each corresponding item.
 # Higher weights encourage crafting more advanced items.
@@ -24,9 +26,9 @@ CRAFTING_REWARD_WEIGHTS = jnp.array([
     1.0,  # Reward for wood_pickaxe
     1.0,  # Reward for stone_pickaxe
     1.0,  # Reward for iron_pickaxe
-    0.0,  # Reward for wood_sword
-    0.0,  # Reward for stone_sword
-    0.0,  # Reward for iron_sword
+    1.0,  # Reward for wood_sword
+    1.0,  # Reward for stone_sword
+    1.0,  # Reward for iron_sword
 ])
 
 @jax.jit
@@ -210,6 +212,90 @@ def my_survival_reward_fn_state(prev_state: EnvState, current_state: EnvState, d
     #reward += mob_proximity_penalty
 
     # is_reset = jnp.logical_and(prev_health < 8.0, health == 9.0)
-    reward = jnp.where(done, -10.0, reward)
+    reward = jnp.where(done, 0.0, reward * SURVIVAL_MULTIPLIER)
 
     return reward.astype(jnp.float32)
+
+HARVEST_ACHIEVEMENT_REWARDS = {
+    # Basic progression - essential for iron crafting
+    Achievement.COLLECT_WOOD.value: {"reward": 1.0, "enabled": True},
+    
+    # Stone progression - needed for better mining
+    Achievement.COLLECT_STONE.value: {"reward": 1.0, "enabled": True},
+    
+    # Iron prerequisites - furnace needed for smelting
+    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},
+    Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
+    
+    # Optional achievements (can be toggled off to find minimal set)
+    Achievement.COLLECT_SAPLING.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_DIAMOND.value: {"reward": 1.0, "enabled": True},
+}
+
+CRAFTING_ACHIEVEMENT_REWARDS = {
+    # Basic progression - essential for iron crafting
+    Achievement.MAKE_WOOD_PICKAXE.value: {"reward": 1.0, "enabled": True},
+    
+    # Stone progression - needed for better mining
+    Achievement.MAKE_STONE_PICKAXE.value: {"reward": 1.0, "enabled": True},
+    
+    # Iron crafting goals - final objectives
+    Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": True},
+    Achievement.MAKE_IRON_SWORD.value: {"reward": 1.0, "enabled": True},
+    
+    # Optional achievements (can be toggled off to find minimal set)
+    Achievement.MAKE_WOOD_SWORD.value: {"reward": 1.0, "enabled": False},
+    Achievement.MAKE_STONE_SWORD.value: {"reward": 1.0, "enabled": False},
+}
+
+@jax.jit
+def my_ppo_harvesting_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
+    prev_achievements = prev_state.achievements.astype(jnp.float32)
+    cur_achievements = current_state.achievements.astype(jnp.float32)
+    achievement_deltas = cur_achievements - prev_achievements
+    
+    total_reward = 0.0
+    
+    # Process each configured achievement
+    for achievement_id, config in HARVEST_ACHIEVEMENT_REWARDS.items():
+        if config["enabled"]:
+            # Add reward for newly achieved accomplishments
+            achievement_gained = achievement_deltas[achievement_id]
+            total_reward += achievement_gained * config["reward"]
+    
+    # Return 0 if episode done, otherwise return calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    return jnp.array(reward, dtype=jnp.float32)
+
+def my_ppo_crafting_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
+    prev_achievements = prev_state.achievements.astype(jnp.float32)
+    cur_achievements = current_state.achievements.astype(jnp.float32)
+    achievement_deltas = cur_achievements - prev_achievements
+    
+    total_reward = 0.0
+    
+    # Process each configured achievement
+    for achievement_id, config in CRAFTING_ACHIEVEMENT_REWARDS.items():
+        if config["enabled"]:
+            # Add reward for newly achieved accomplishments
+            achievement_gained = achievement_deltas[achievement_id]
+            total_reward += achievement_gained * config["reward"]
+    
+    # Return 0 if episode done, otherwise return calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    return jnp.array(reward, dtype=jnp.float32)
+
+@jax.jit
+def my_harvesting_crafting_reward_fn_state(prev_state: EnvState, current_state: EnvState, done: jnp.ndarray) -> jnp.float32:
+    # Get harvesting reward
+    # harvesting_reward = my_harvesting_reward_fn_state(prev_state, current_state, done)
+    harvesting_reward = my_ppo_harvesting_reward_fn_state(prev_state, current_state, done)
+    
+    # Get crafting reward
+    crafting_reward = my_crafting_reward_fn_state(prev_state, current_state, done)
+    # crafting_reward = my_ppo_crafting_reward_fn_state(prev_state, current_state, done)
+    
+    # Combine the rewards
+    combined_reward = harvesting_reward + crafting_reward
+    
+    return combined_reward.astype(jnp.float32)

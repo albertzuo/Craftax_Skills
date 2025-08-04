@@ -17,8 +17,8 @@ ACHIEVEMENT_REWARDS = {
     
     # Iron prerequisites - furnace needed for smelting
     Achievement.PLACE_FURNACE.value: {"reward": 1.0, "enabled": False},
-    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},
-    Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
+    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": False},
     
     # Iron crafting goals - final objectives
     Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": True},
@@ -38,16 +38,6 @@ ACHIEVEMENT_REWARDS = {
     Achievement.MAKE_WOOD_SWORD.value: {"reward": 1.0, "enabled": False},
     Achievement.MAKE_STONE_SWORD.value: {"reward": 1.0, "enabled": False},
 }
-
-def set_achievement_enabled(achievement_id: int, enabled: bool):
-    """Toggle an achievement reward on/off"""
-    if achievement_id in ACHIEVEMENT_REWARDS:
-        ACHIEVEMENT_REWARDS[achievement_id]["enabled"] = enabled
-
-def set_achievement_reward(achievement_id: int, reward: float):
-    """Set the reward value for an achievement"""
-    if achievement_id in ACHIEVEMENT_REWARDS:
-        ACHIEVEMENT_REWARDS[achievement_id]["reward"] = reward
 
 @jax.jit
 def configurable_achievement_reward_fn(prev_state, cur_state, done: jnp.ndarray) -> jnp.float32:

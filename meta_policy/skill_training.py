@@ -454,88 +454,12 @@ def breakpoint_if_craft_needed(craft_needed):
         return x
     jax.lax.cond(craft_needed, true_fn, false_fn, craft_needed)
 
-def skill_selector_my_two_skills(obs: jnp.ndarray) -> SkillID:
-    """
-    Selects the active skill based on the current observation.
-
-    Priorities:
-    1. Craft: If essential tools (pickaxes) can be crafted and are not yet owned.
-    2. Harvest: Default skill if Craft is not triggered.
-
-    Args:
-        obs: The flattened environment observation tensor.
-
-    Returns:
-        The SkillID (integer enum) representing the selected skill.
-    """
-    # Extract relevant parts of the observation vector
-    # Note: These slices assume the flattened structure from render_craftax_symbolic
-    inventory = jax.lax.dynamic_slice_in_dim(
-        obs, inventory_start_idx, NUM_INVENTORY_SLOTS, axis=0
-    )
-    intrinsics = jax.lax.dynamic_slice_in_dim(
-        obs, intrinsics_start_idx, NUM_INTRINSIC_STATS, axis=0
-    )
-
-    # jax.debug.print("is_low_health: {}", is_low_health)
-    # jax.debug.print("inventory start idx: {}", inventory_start_idx)
-    # jax.debug.print("intrinsics start idx: {}", intrinsics_start_idx)
-    # jax.debug.print("light level idx: {}", light_level_idx)
-    # jax.debug.breakpoint()
-
-    # --- 2. Check Crafting Conditions (if Sustain is not needed) ---
-    # Check inventory quantities (remember they are scaled by 10)
-    # We only need > 0, so checking > 0.01 is safe for float comparison
-    has_wood = inventory[INV_WOOD] > 0.01
-    has_stone = inventory[INV_STONE] > 0.01
-    has_iron = inventory[INV_IRON] > 0.01
-    has_coal = inventory[INV_COAL] > 0.01
+def skill_selector_my_two_skills(obs: jnp.ndarray) -> jnp.int32:
+    # Use existing skill selector logic
+    skill_id = skill_selector(obs)
     
-    has_wood_pick = inventory[INV_WOOD_PICKAXE] > 0.01
-    has_stone_pick = inventory[INV_STONE_PICKAXE] > 0.01
-    has_iron_pick = inventory[INV_IRON_PICKAXE] > 0.01
-
-    has_wood_sword = inventory[INV_WOOD_SWORD] > 0.01
-    has_stone_sword = inventory[INV_STONE_SWORD] > 0.01
-    has_iron_sword = inventory[INV_IRON_SWORD] > 0.01
-
-    # Define simplified conditions for crafting pickaxes
-    # Assumes 1 wood for wood pickaxe, 1 wood + 1 stone for stone, 1 wood + 1 iron for iron
-    # More complex recipes would require checking actual quantities (e.g., >= 0.1 for 1 item)
-    can_craft_wood_pick = has_wood
-    can_craft_stone_pick = has_wood & has_stone
-    can_craft_iron_pick = has_wood & has_iron & has_coal 
-
-    can_craft_wood_sword = has_wood
-    can_craft_stone_sword = has_wood & has_stone
-    can_craft_iron_sword = has_wood & has_iron & has_coal # Simplification: assumes wood handle needed
-
-    # Prioritize crafting better tools if materials are available and tool isn't owned
-    should_craft_iron_pick = can_craft_iron_pick & ~has_iron_pick
-    should_craft_stone_pick = can_craft_stone_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for iron
-    should_craft_wood_pick = can_craft_wood_pick & ~has_wood_pick & ~has_stone_pick & ~should_craft_iron_pick # Only if not going for stone/iron
-
-    should_craft_iron_sword = can_craft_iron_sword & ~has_iron_sword
-    should_craft_stone_sword = can_craft_stone_sword & ~has_stone_sword & ~should_craft_iron_sword
-    should_craft_wood_sword = can_craft_wood_sword & ~has_wood_sword & ~has_stone_sword & ~should_craft_iron_sword
-
-    craft_needed = should_craft_wood_pick | should_craft_stone_pick | should_craft_iron_pick | \
-                   should_craft_wood_sword | should_craft_stone_sword | should_craft_iron_sword
-
-    # --- 3. Determine Final Skill ---
-    # Use jnp.where for JAX-compatible conditional logic
-    # Priority: Craft > Harvest
-    # breakpoint_if_craft_needed(craft_needed)
-    # jax.lax.cond(jnp.any(craft_needed), lambda: jax.debug.print("inventory: {}", inventory), lambda: None)
-    # jax.debug.print("is_crafting:    {craft},   inv:    {inv}", craft=craft_needed, inv=inventory)
-    # jax.debug.breakpoint()
-    selected_skill_id = jnp.where(
-        craft_needed,
-        SkillID.CRAFT,
-        SkillID.HARVEST
-    )
-
-    return selected_skill_id
+    # Map 3 skills to 2: HARVEST(0) and CRAFT(1) -> 0, SUSTAIN(2) -> 1
+    return jnp.where(skill_id == SkillID.SUSTAIN, jnp.int32(1), jnp.int32(0))
 
 def single_skill_selector_zero(obs: jnp.ndarray) -> SkillID:
     return SkillID.HARVEST
