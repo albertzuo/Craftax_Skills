@@ -299,3 +299,15 @@ def my_harvesting_crafting_reward_fn_state(prev_state: EnvState, current_state: 
     combined_reward = harvesting_reward + crafting_reward
     
     return combined_reward.astype(jnp.float32)
+
+@jax.jit
+def my_combined_reward_fn_state(prev_state, current_state, done):
+    harvesting_reward = my_ppo_harvesting_reward_fn_state(prev_state, current_state, done)
+    crafting_reward = my_crafting_reward_fn_state(prev_state, current_state, done)
+    
+    survival_reward = my_survival_reward_fn_state(prev_state, current_state, done)
+    
+    # Combine all rewards
+    combined_reward = harvesting_reward + crafting_reward + survival_reward
+    
+    return combined_reward.astype(jnp.float32)
