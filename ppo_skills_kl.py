@@ -56,6 +56,7 @@ from reward_fns.my_skill_rewards_state import (
     my_crafting_reward_fn_state,
     my_survival_reward_fn_state,
     my_harvesting_crafting_reward_fn_state,
+    my_combined_reward_fn_state,
 )
 from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
@@ -346,7 +347,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(skill_selector)(base_obs)
+                new_skill_indices = jax.vmap(single_skill_selector_zero)(base_obs)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -371,17 +372,18 @@ def make_train(config):
                 # reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs, done, prev_env_state.env_state, env_state.env_state)
 
                 # reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
-                reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
+                # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
+                reward_fns_single = [my_combined_reward_fn_state]
                 # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
                 # reward_fns_single = [configurable_achievement_reward_fn]
                 def select_reward_single(index, prev_state, cur_state, done_val):
                     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
                 reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
-                reward_e_subset = jax.vmap(configurable_achievement_reward_fn)(prev_env_state.env_state, env_state.env_state, done)
+                # reward_e_subset = jax.vmap(configurable_achievement_reward_fn)(prev_env_state.env_state, env_state.env_state, done)
                 # Switch from reward_e (first 20%) to reward_i (remaining 80%)
-                # reward_switch_threshold = config["NUM_UPDATES"] * 0.5
-                # reward = jnp.where(update_step < reward_switch_threshold, reward_i, reward_e_subset)
-                reward = reward_i #+ reward_e_subset
+                reward_switch_threshold = config["NUM_UPDATES"] * 0.8
+                reward = jnp.where(update_step < reward_switch_threshold, reward_e, reward_i)
+                # reward = reward_i #+ reward_e_subset
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -863,7 +865,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = skill_selector(last_obs)
+            curr_skill_index = single_skill_selector_zero(last_obs)
             current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
@@ -891,8 +893,9 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         # skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, done)
 
         # reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
-        reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
+        # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
+        reward_fns_single = [my_combined_reward_fn_state]
         # reward_fns_single = [configurable_achievement_reward_fn]
         def select_reward_single(index, prev_state, cur_state, done_val):
             return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
