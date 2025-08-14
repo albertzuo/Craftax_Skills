@@ -61,7 +61,7 @@ from reward_fns.my_skill_rewards_state import (
 from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
 )
-from reward_fns.custom_achievements.achievements import (
+from reward_fns.custom_achievements.survival_achievements import (
     init_single_tracker,
     update_custom_achievements,
     get_custom_achievement_reward,
@@ -641,8 +641,12 @@ def make_train(config):
             info_extended["custom_achievement_5"] = custom_trackers_log.achievements[:, 5]
             info_extended["custom_achievement_6"] = custom_trackers_log.achievements[:, 6]
             info_extended["custom_achievement_7"] = custom_trackers_log.achievements[:, 7]
-
-
+            info_extended["custom_achievement_8"] = custom_trackers_log.achievements[:, 8]
+            info_extended["custom_achievement_9"] = custom_trackers_log.achievements[:, 9]
+            info_extended["custom_achievement_10"] = custom_trackers_log.achievements[:, 10]
+            info_extended["custom_achievement_11"] = custom_trackers_log.achievements[:, 11]
+            info_extended["custom_achievement_12"] = custom_trackers_log.achievements[:, 12]
+            info_extended["custom_achievement_13"] = custom_trackers_log.achievements[:, 13]
 
             metric = jax.tree.map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
@@ -686,6 +690,12 @@ def make_train(config):
                     to_log["custom_achievement_5"] = metric["custom_achievement_5"]
                     to_log["custom_achievement_6"] = metric["custom_achievement_6"]
                     to_log["custom_achievement_7"] = metric["custom_achievement_7"]
+                    to_log["custom_achievement_8"] = metric["custom_achievement_8"]
+                    to_log["custom_achievement_9"] = metric["custom_achievement_9"]
+                    to_log["custom_achievement_10"] = metric["custom_achievement_10"]
+                    to_log["custom_achievement_11"] = metric["custom_achievement_11"]
+                    to_log["custom_achievement_12"] = metric["custom_achievement_12"]
+                    to_log["custom_achievement_13"] = metric["custom_achievement_13"]
                     batch_log(update_step, to_log, config)
 
                 jax.debug.callback(
