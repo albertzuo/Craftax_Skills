@@ -7,22 +7,22 @@ from craftax.craftax_classic.constants import Achievement
 # Official Craftax gives 1.0 reward per achievement, so we maintain that
 ACHIEVEMENT_REWARDS = {
     # Basic progression - essential for iron crafting
-    Achievement.COLLECT_WOOD.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_WOOD.value: {"reward": 1.0, "enabled": True},
     Achievement.PLACE_TABLE.value: {"reward": 1.0, "enabled": False},
     Achievement.MAKE_WOOD_PICKAXE.value: {"reward": 1.0, "enabled": True},
     
     # Stone progression - needed for better mining
-    Achievement.COLLECT_STONE.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_STONE.value: {"reward": 1.0, "enabled": True},
     Achievement.MAKE_STONE_PICKAXE.value: {"reward": 1.0, "enabled": True},
     
     # Iron prerequisites - furnace needed for smelting
     Achievement.PLACE_FURNACE.value: {"reward": 1.0, "enabled": False},
-    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": False},
-    Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},
+    Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
     
     # Iron crafting goals - final objectives
     Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": True},
-    Achievement.MAKE_IRON_SWORD.value: {"reward": 1.0, "enabled": True},
+    Achievement.MAKE_IRON_SWORD.value: {"reward": 1.0, "enabled": False},
     
     # Optional achievements (can be toggled off to find minimal set)
     Achievement.COLLECT_SAPLING.value: {"reward": 1.0, "enabled": False},
@@ -32,7 +32,7 @@ ACHIEVEMENT_REWARDS = {
     Achievement.DEFEAT_ZOMBIE.value: {"reward": 1.0, "enabled": False},
     Achievement.DEFEAT_SKELETON.value: {"reward": 1.0, "enabled": False},
     Achievement.WAKE_UP.value: {"reward": 1.0, "enabled": False},
-    Achievement.COLLECT_DIAMOND.value: {"reward": 1.0, "enabled": False},
+    Achievement.COLLECT_DIAMOND.value: {"reward": 1.0, "enabled": True},
     Achievement.PLACE_STONE.value: {"reward": 1.0, "enabled": False},
     Achievement.PLACE_PLANT.value: {"reward": 1.0, "enabled": False},
     Achievement.MAKE_WOOD_SWORD.value: {"reward": 1.0, "enabled": False},

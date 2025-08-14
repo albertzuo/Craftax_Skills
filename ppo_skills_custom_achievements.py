@@ -62,8 +62,7 @@ from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
 )
 from reward_fns.custom_achievements.achievements import (
-    NUM_CUSTOM_ACHIEVEMENTS,
-    CustomAchievementTracker,
+    init_single_tracker,
     update_custom_achievements,
     get_custom_achievement_reward,
 )
@@ -211,16 +210,8 @@ def make_train(config):
         damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # [thirst, hunger, energy, zombie, arrow, lava]
         final_damage_counters = jnp.zeros((config["NUM_ENVS"], 6))  # Episode-end damage counters
         
-        # Initialize custom achievement trackers for all environments
-        # Create array of structures (not structure of arrays) for vmap compatibility
-        def init_single_tracker():
-            return CustomAchievementTracker(
-                achievements=jnp.zeros(NUM_CUSTOM_ACHIEVEMENTS, dtype=jnp.bool_)
-            )
-        
         # Create NUM_ENVS separate trackers
         custom_trackers = jax.vmap(lambda _: init_single_tracker())(jnp.arange(config["NUM_ENVS"]))
-        final_custom_achievements = jnp.zeros((config["NUM_ENVS"], NUM_CUSTOM_ACHIEVEMENTS), dtype=jnp.bool_)
 
         # Helper function to detect damage sources
         def detect_damage_sources(prev_state, current_state, prev_obs, current_obs, action, done):
@@ -333,7 +324,6 @@ def make_train(config):
                     rng,
                     update_step,
                     custom_trackers,
-                    final_custom_achievements,
                 ) = runner_state
 
                 rng, _rng = jax.random.split(rng)
@@ -470,7 +460,6 @@ def make_train(config):
                     rng,
                     update_step,
                     updated_custom_trackers,
-                    final_custom_achievements,
                 )
                 return runner_state, transition
 
@@ -492,7 +481,6 @@ def make_train(config):
                 rng,
                 update_step,
                 custom_trackers,
-                final_custom_achievements,
             ) = runner_state
 
 
@@ -630,7 +618,7 @@ def make_train(config):
             train_state = update_state[0]
 
 
-            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _, custom_trackers_log, _ = runner_state
+            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _, custom_trackers_log = runner_state
             
             info_extended = traj_batch.info
             info_extended["final_intrinsic_rewards_skill_0"] = final_intrinsic_rewards_log[:, 0]
@@ -720,7 +708,6 @@ def make_train(config):
                 rng,
                 update_step + 1,
                 custom_trackers,
-                final_custom_achievements,
             )
 
             return runner_state, metric
@@ -740,7 +727,6 @@ def make_train(config):
             _rng,
             0,
             custom_trackers,
-            final_custom_achievements,
         )
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]

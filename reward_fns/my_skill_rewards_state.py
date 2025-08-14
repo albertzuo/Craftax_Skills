@@ -13,7 +13,7 @@ HARVESTING_REWARD_WEIGHTS = jnp.array([
     1.0, # Diamond
     0.0,  # Sapling
 ], dtype=jnp.float32)
-HARVESTING_MULTIPLIER = 1.0
+HARVESTING_MULTIPLIER = 0.2
 
 CRAFTING_MULTIPLIER = 1.0
 
@@ -304,6 +304,7 @@ def my_harvesting_crafting_reward_fn_state(prev_state: EnvState, current_state: 
 def my_combined_reward_fn_state(prev_state, current_state, done):
     harvesting_reward = my_harvesting_reward_fn_state(prev_state, current_state, done)
     # harvesting_reward = my_ppo_harvesting_reward_fn_state(prev_state, current_state, done)
+
     crafting_reward = my_crafting_reward_fn_state(prev_state, current_state, done)
     
     survival_reward = my_survival_reward_fn_state(prev_state, current_state, done)
