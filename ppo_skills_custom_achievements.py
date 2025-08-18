@@ -61,7 +61,7 @@ from reward_fns.my_skill_rewards_state import (
 from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
 )
-from reward_fns.custom_achievements.survival_achievements import (
+from reward_fns.custom_achievements.fort_achievements import (
     init_single_tracker,
     update_custom_achievements,
     get_custom_achievement_reward,
@@ -212,6 +212,7 @@ def make_train(config):
         
         # Create NUM_ENVS separate trackers
         custom_trackers = jax.vmap(lambda _: init_single_tracker())(jnp.arange(config["NUM_ENVS"]))
+        final_custom_trackers = jax.vmap(lambda _: init_single_tracker())(jnp.arange(config["NUM_ENVS"]))
 
         # Helper function to detect damage sources
         def detect_damage_sources(prev_state, current_state, prev_obs, current_obs, action, done):
@@ -324,6 +325,7 @@ def make_train(config):
                     rng,
                     update_step,
                     custom_trackers,
+                    final_custom_trackers,
                 ) = runner_state
 
                 rng, _rng = jax.random.split(rng)
@@ -432,6 +434,11 @@ def make_train(config):
                 # Update final damage counters for completed episodes
                 updated_final_damage_counters = final_damage_counters * (1 - done_expanded) + updated_damage_counters * done_expanded
                 updated_damage_counters = updated_damage_counters * (1 - done_expanded)
+                
+                # Update final custom trackers for completed episodes  
+                updated_final_custom_trackers = final_custom_trackers.replace(
+                    achievements=(final_custom_trackers.achievements * (1 - done_expanded) + custom_trackers.achievements * done_expanded).astype(jnp.bool_),
+                )
 
                 transition = Transition(
                     done=done,
@@ -453,13 +460,14 @@ def make_train(config):
                     updated_final_intrinsic_rewards,
                     updated_skill_timesteps,
                     updated_final_skill_timesteps,
-                    current_skill_durations,  # Add to runner state
+                    current_skill_durations,
                     updated_damage_counters,
                     updated_final_damage_counters,
                     obs, 
                     rng,
                     update_step,
                     updated_custom_trackers,
+                    updated_final_custom_trackers,
                 )
                 return runner_state, transition
 
@@ -481,6 +489,7 @@ def make_train(config):
                 rng,
                 update_step,
                 custom_trackers,
+                final_custom_trackers,
             ) = runner_state
 
 
@@ -618,7 +627,7 @@ def make_train(config):
             train_state = update_state[0]
 
 
-            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _, custom_trackers_log = runner_state
+            _ , _ , _ , final_intrinsic_rewards_log, _ , final_skill_timesteps_log, _, _, final_damage_counters_log, _ , _ , _, custom_trackers_log, final_custom_trackers_log = runner_state
             
             info_extended = traj_batch.info
             info_extended["final_intrinsic_rewards_skill_0"] = final_intrinsic_rewards_log[:, 0]
@@ -633,20 +642,20 @@ def make_train(config):
             info_extended["damage_zombie_total"] = final_damage_counters_log[:, 3]
             info_extended["damage_arrow_total"] = final_damage_counters_log[:, 4]
             info_extended["damage_lava_total"] = final_damage_counters_log[:, 5]
-            info_extended["custom_achievement_0"] = custom_trackers_log.achievements[:, 0]
-            info_extended["custom_achievement_1"] = custom_trackers_log.achievements[:, 1]
-            info_extended["custom_achievement_2"] = custom_trackers_log.achievements[:, 2]
-            info_extended["custom_achievement_3"] = custom_trackers_log.achievements[:, 3]
-            info_extended["custom_achievement_4"] = custom_trackers_log.achievements[:, 4]
-            info_extended["custom_achievement_5"] = custom_trackers_log.achievements[:, 5]
-            info_extended["custom_achievement_6"] = custom_trackers_log.achievements[:, 6]
-            info_extended["custom_achievement_7"] = custom_trackers_log.achievements[:, 7]
-            info_extended["custom_achievement_8"] = custom_trackers_log.achievements[:, 8]
-            info_extended["custom_achievement_9"] = custom_trackers_log.achievements[:, 9]
-            info_extended["custom_achievement_10"] = custom_trackers_log.achievements[:, 10]
-            info_extended["custom_achievement_11"] = custom_trackers_log.achievements[:, 11]
-            info_extended["custom_achievement_12"] = custom_trackers_log.achievements[:, 12]
-            info_extended["custom_achievement_13"] = custom_trackers_log.achievements[:, 13]
+            # info_extended["custom_achievement_0"] = final_custom_trackers_log.achievements[:, 0]
+            # info_extended["custom_achievement_1"] = final_custom_trackers_log.achievements[:, 1]
+            # info_extended["custom_achievement_2"] = final_custom_trackers_log.achievements[:, 2]
+            # info_extended["custom_achievement_3"] = final_custom_trackers_log.achievements[:, 3]
+            # info_extended["custom_achievement_4"] = final_custom_trackers_log.achievements[:, 4]
+            # info_extended["custom_achievement_5"] = final_custom_trackers_log.achievements[:, 5]
+            # info_extended["custom_achievement_6"] = final_custom_trackers_log.achievements[:, 6]
+            # info_extended["custom_achievement_7"] = final_custom_trackers_log.achievements[:, 7]
+            # info_extended["custom_achievement_8"] = final_custom_trackers_log.achievements[:, 8]
+            # info_extended["custom_achievement_9"] = final_custom_trackers_log.achievements[:, 9]
+            # info_extended["custom_achievement_10"] = final_custom_trackers_log.achievements[:, 10]
+            # info_extended["custom_achievement_11"] = final_custom_trackers_log.achievements[:, 11]
+            # info_extended["custom_achievement_12"] = final_custom_trackers_log.achievements[:, 12]
+            # info_extended["custom_achievement_13"] = final_custom_trackers_log.achievements[:, 13]
 
             metric = jax.tree.map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
@@ -682,20 +691,20 @@ def make_train(config):
                     to_log["damage_zombie_total"] = metric["damage_zombie_total"]
                     to_log["damage_arrow_total"] = metric["damage_arrow_total"]
                     to_log["damage_lava_total"] = metric["damage_lava_total"]
-                    to_log["custom_achievement_0"] = metric["custom_achievement_0"]
-                    to_log["custom_achievement_1"] = metric["custom_achievement_1"]
-                    to_log["custom_achievement_2"] = metric["custom_achievement_2"]
-                    to_log["custom_achievement_3"] = metric["custom_achievement_3"]
-                    to_log["custom_achievement_4"] = metric["custom_achievement_4"]
-                    to_log["custom_achievement_5"] = metric["custom_achievement_5"]
-                    to_log["custom_achievement_6"] = metric["custom_achievement_6"]
-                    to_log["custom_achievement_7"] = metric["custom_achievement_7"]
-                    to_log["custom_achievement_8"] = metric["custom_achievement_8"]
-                    to_log["custom_achievement_9"] = metric["custom_achievement_9"]
-                    to_log["custom_achievement_10"] = metric["custom_achievement_10"]
-                    to_log["custom_achievement_11"] = metric["custom_achievement_11"]
-                    to_log["custom_achievement_12"] = metric["custom_achievement_12"]
-                    to_log["custom_achievement_13"] = metric["custom_achievement_13"]
+                    # to_log["custom_achievement_0"] = metric["custom_achievement_0"]
+                    # to_log["custom_achievement_1"] = metric["custom_achievement_1"]
+                    # to_log["custom_achievement_2"] = metric["custom_achievement_2"]
+                    # to_log["custom_achievement_3"] = metric["custom_achievement_3"]
+                    # to_log["custom_achievement_4"] = metric["custom_achievement_4"]
+                    # to_log["custom_achievement_5"] = metric["custom_achievement_5"]
+                    # to_log["custom_achievement_6"] = metric["custom_achievement_6"]
+                    # to_log["custom_achievement_7"] = metric["custom_achievement_7"]
+                    # to_log["custom_achievement_8"] = metric["custom_achievement_8"]
+                    # to_log["custom_achievement_9"] = metric["custom_achievement_9"]
+                    # to_log["custom_achievement_10"] = metric["custom_achievement_10"]
+                    # to_log["custom_achievement_11"] = metric["custom_achievement_11"]
+                    # to_log["custom_achievement_12"] = metric["custom_achievement_12"]
+                    # to_log["custom_achievement_13"] = metric["custom_achievement_13"]
                     batch_log(update_step, to_log, config)
 
                 jax.debug.callback(
@@ -718,6 +727,7 @@ def make_train(config):
                 rng,
                 update_step + 1,
                 custom_trackers,
+                final_custom_trackers,
             )
 
             return runner_state, metric
@@ -737,6 +747,7 @@ def make_train(config):
             _rng,
             0,
             custom_trackers,
+            final_custom_trackers,
         )
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
