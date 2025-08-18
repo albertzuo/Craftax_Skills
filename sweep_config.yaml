@@ -7,9 +7,11 @@ metric:
   name: charts/episodic_return
   goal: maximize
 parameters:
-  lr:
-    values: [1e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3]
+  seed:
+    values: [42, 123, 456, 789, 1001]
   # Fixed parameters
+  lr:
+    value: 2e-4  # Fixed learning rate
   env_name:
     value: "Craftax-Classic-Symbolic-v1"
   num_envs:
@@ -32,6 +34,10 @@ parameters:
     value: 0.01
   vf_coef:
     value: 0.5
+  kl_coef:
+    value: 0.05
+  use_forward_kl:
+    value: false
   max_grad_norm:
     value: 1.0
   activation:
@@ -56,5 +62,3 @@ parameters:
     value: 16
   max_num_skills:
     value: 3
-  diayn_reward_coef:
-    value: 0.1

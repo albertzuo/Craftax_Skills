@@ -103,7 +103,7 @@ def get_inventory_slice(obs: jnp.ndarray) -> jnp.ndarray:
     return obs[..., start_idx:end_idx]
 
 @jax.jit
-def calculate_harvesting_reward(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> jnp.ndarray:
+def harvesting_reward_fn(prev_obs: jnp.ndarray, current_obs: jnp.ndarray) -> jnp.ndarray:
     """
     Calculates a reward signal focused on harvesting raw materials in Craftax.
 
@@ -159,12 +159,12 @@ CRAFTED_ITEM_INDICES = jnp.array([
 # Order must match CRAFTED_ITEM_INDICES:
 # [wood_p, stone_p, iron_p, wood_s, stone_s, iron_s]
 CRAFTING_REWARD_WEIGHTS = jnp.array([
-    1,  # Reward for wood_pickaxe
-    10.0,  # Reward for stone_pickaxe
-    100.0,  # Reward for iron_pickaxe
-    1,  # Reward for wood_sword
-    10.0,  # Reward for stone_sword
-    100.0,  # Reward for iron_sword
+    1.0,  # Reward for wood_pickaxe
+    2.0,  # Reward for stone_pickaxe
+    3.0,  # Reward for iron_pickaxe
+    1.0,  # Reward for wood_sword
+    2.0,  # Reward for stone_sword
+    3.0,  # Reward for iron_sword
 ])
 
 @jax.jit
@@ -225,14 +225,14 @@ def crafting_reward_fn(prev_obs_flat: jnp.ndarray, current_obs_flat: jnp.ndarray
     return reward.astype(jnp.float32)
 
 @jax.jit
-def survival_reward_function(prev_obs, obs):
+def survival_reward_fn(prev_obs: jnp.ndarray, obs: jnp.ndarray) -> jnp.float32:
     """
     Calculates a reward signal focused on survival in the Craftax environment.
 
     Args:
+        prev_obs: The flattened observation vector for the previous state.
         obs: The flattened observation vector for the current state
              (output of render_craftax_symbolic).
-        prev_obs: The flattened observation vector for the previous state.
 
     Returns:
         A scalar reward value (float).

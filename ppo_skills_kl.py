@@ -23,24 +23,14 @@ from orbax.checkpoint import (
 )
 
 from logz.batch_logging import batch_log, create_log_dict
-# from models.diayn_ac import DiaynAc
 from models.actor_critic import (
     ActorCritic,
     ActorCriticConv,
 )
 from reward_fns.gemini_skill_rewards import (
-    calculate_harvesting_reward,
+    harvesting_reward_fn,
     crafting_reward_fn,
-    survival_reward_function,
-)
-from reward_fns.gemini_diverse_skills_rewards import (
-    reward_broaden_horizons_stockpile,
-    reward_execute_next_milestone_skill,
-)
-from reward_fns.gemini_personality_rewards import (
-    cautious_reward_function,
-    driven_reward_function,
-    playful_reward_function,
+    survival_reward_fn,
 )
 from reward_fns.my_skill_rewards import (
     my_harvesting_reward_fn,
@@ -347,7 +337,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(single_skill_selector_zero)(base_obs)
+                new_skill_indices = jax.vmap(skill_selector)(base_obs)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -361,6 +351,13 @@ def make_train(config):
                 obs = jax.vmap(augment_obs_with_skill)(base_obs, skill_vectors)
                 last_base_obs = last_obs[:, :-config["MAX_NUM_SKILLS"]]
 
+                # GPT ones
+                # reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
+                # def select_reward_single(index, prev_obs, cur_obs):
+                #     return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs)
+                # reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs)
+
+                # My obs based ones
                 # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
                 # def select_reward_single(index, prev_obs, cur_obs, done_val):
                 #     return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs, done_val)
@@ -373,12 +370,13 @@ def make_train(config):
 
                 # reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
                 # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
-                # reward_fns_single = [my_combined_reward_fn_state]
+                reward_fns_single = [my_combined_reward_fn_state]
                 # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
-                reward_fns_single = [configurable_achievement_reward_fn]
+                # reward_fns_single = [configurable_achievement_reward_fn]
                 def select_reward_single(index, prev_state, cur_state, done_val):
                     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
                 reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
+                
                 # reward_e_subset = jax.vmap(configurable_achievement_reward_fn)(prev_env_state.env_state, env_state.env_state, done)
                 # Switch between rewards
                 # reward_switch_threshold = config["NUM_UPDATES"] * 0.8
@@ -532,31 +530,6 @@ def make_train(config):
                         loss_actor = -jnp.minimum(loss_actor1, loss_actor2)
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
-
-                        # CALCULATE KL PENALTY WITH FROZEN REFERENCE
-                        # reward_switch_threshold = config["NUM_UPDATES"] * 0.5
-                        # should_freeze = (update_step >= reward_switch_threshold) & jnp.all(frozen_log_prob == 0.0)
-                        
-                        # # Freeze log_prob once when hitting threshold
-                        # frozen_log_prob = jnp.where(should_freeze, traj_batch.log_prob, frozen_log_prob)
-                        
-                        # def forward_kl(log_prob, old_log_prob):
-                        #     return jnp.maximum(0.0, log_prob - old_log_prob).mean()
-                        
-                        # def reverse_kl(log_prob, old_log_prob):
-                        #     return jnp.maximum(0.0, old_log_prob - log_prob).mean()
-                        
-                        # kl_penalty = jax.lax.cond(
-                        #     config["USE_FORWARD_KL"],
-                        #     forward_kl,
-                        #     reverse_kl,
-                        #     log_prob,
-                        #     frozen_log_prob
-                        # )
-                        
-                        # # Add KL penalty to actor loss only after reward switch threshold
-                        # kl_coeff = jnp.where(update_step < reward_switch_threshold, 0.0, config["KL_COEF"])
-                        # loss_actor = loss_actor + kl_coeff * kl_penalty
                         
                         total_loss = (
                             loss_actor
@@ -865,7 +838,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = single_skill_selector_zero(last_obs)
+            curr_skill_index = skill_selector(last_obs)
             current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
@@ -887,6 +860,11 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration, done)
 
         # Calculate active skill reward
+        # reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
+        # def select_reward_single(index, last_b_obs_s, b_obs_s):
+        #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
+        # skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
+
         # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
         # def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
         #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
@@ -895,18 +873,11 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         # reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
-        # reward_fns_single = [my_combined_reward_fn_state]
-        reward_fns_single = [configurable_achievement_reward_fn]
+        reward_fns_single = [my_combined_reward_fn_state]
+        # reward_fns_single = [configurable_achievement_reward_fn]
         def select_reward_single(index, prev_state, cur_state, done_val):
             return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
         skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
-
-        # reward_fns_single = [configurable_achievement_reward_fn]
-        # def select_reward_single(index, prev_state, cur_state, done_val):
-        #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-        # skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
-        
-        
 
         # Count mobs nearby
         mobs_nearby = count_mobs_nearby(base_obs)

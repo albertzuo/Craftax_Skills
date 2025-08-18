@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Wandb sweep runner for learning rate optimization.
+Wandb sweep runner for random seed optimization.
 This script is called by wandb sweep agents to run individual experiments.
 """
 
 import wandb
 import argparse
 import numpy as np
-from ppo_skills_chatgpt_diayn import run_ppo
+from ppo_skills_kl import run_ppo
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
     args.env_name = config.env_name
     args.num_envs = config.num_envs
     args.total_timesteps = config.total_timesteps
-    args.lr = float(config.lr)  # This is the swept parameter
+    args.lr = float(config.lr)  # Fixed learning rate
     args.num_steps = config.num_steps
     args.update_epochs = config.update_epochs
     args.num_minibatches = config.num_minibatches
@@ -33,6 +33,8 @@ def main():
     args.clip_eps = config.clip_eps
     args.ent_coef = config.ent_coef
     args.vf_coef = config.vf_coef
+    args.kl_coef = config.kl_coef
+    args.use_forward_kl = config.use_forward_kl
     args.max_grad_norm = config.max_grad_norm
     args.activation = config.activation
     args.anneal_lr = config.anneal_lr
@@ -45,14 +47,13 @@ def main():
     args.use_optimistic_resets = config.use_optimistic_resets
     args.optimistic_reset_ratio = config.optimistic_reset_ratio
     args.max_num_skills = config.max_num_skills
-    args.diayn_reward_coef = config.diayn_reward_coef
     
-    # Generate a random seed if not provided
-    args.seed = np.random.randint(2**31)
+    # Use seed from wandb sweep config
+    args.seed = int(config.seed)
     
     # Set wandb project and entity if not already set by sweep
     if not hasattr(config, 'wandb_project') or config.wandb_project is None:
-        args.wandb_project = "craftax-skills-lr-sweep"
+        args.wandb_project = "craftax-skills-seed-sweep"
     else:
         args.wandb_project = config.wandb_project
     
@@ -61,8 +62,8 @@ def main():
     else:
         args.wandb_entity = config.wandb_entity
     
-    # Log the learning rate being tested
-    print(f"Running experiment with learning rate: {args.lr}")
+    # Log the seed being tested
+    print(f"Running experiment with seed: {args.seed}")
     
     # Run the training
     run_ppo(args)
