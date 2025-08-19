@@ -380,7 +380,7 @@ def make_train(config):
                 # Switch between rewards
                 # reward_switch_threshold = config["NUM_UPDATES"] * 0.8
                 # reward = jnp.where(update_step < reward_switch_threshold, reward_e, reward_i)
-                reward = reward_i #+ reward_e_subset
+                reward = reward_e #+ reward_e_subset
                 current_env_indices = jnp.arange(config["NUM_ENVS"])
                 updated_intrinsic_rewards = intrinsic_rewards.at[current_env_indices, last_skill_indices].add(reward_i)
                 updated_skill_timesteps = skill_timesteps.at[current_env_indices, last_skill_indices].add(1)
@@ -862,7 +862,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
         def select_reward_single(index, last_b_obs_s, b_obs_s):
             return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
-        skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
+        skill_reward = reward_e#select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
 
         # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
         # def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):

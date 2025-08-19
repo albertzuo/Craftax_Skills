@@ -122,6 +122,7 @@ def make_train(config):
     )
     env_params = env.default_params
 
+    env = EnergyWrapper(env)
     env = LogWrapper(env)
     if config["USE_OPTIMISTIC_RESETS"]:
         env = OptimisticResetVecEnvWrapper(
@@ -336,7 +337,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(single_skill_selector_one)(base_obs)
+                new_skill_indices = jax.vmap(single_skill_selector_two)(base_obs)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -837,7 +838,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = single_skill_selector_one(last_obs)
+            curr_skill_index = single_skill_selector_two(last_obs)
             current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index

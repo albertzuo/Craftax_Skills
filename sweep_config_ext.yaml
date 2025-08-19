@@ -1,0 +1,64 @@
+program: run_sweep_ext.py
+command:
+  - python3
+  - ${program}
+method: grid
+metric:
+  name: charts/episodic_return
+  goal: maximize
+parameters:
+  seed:
+    values: [42, 123, 456, 789, 1001]
+  # Fixed parameters
+  lr:
+    value: 2e-4  # Fixed learning rate
+  env_name:
+    value: "Craftax-Classic-Symbolic-v1"
+  num_envs:
+    value: 1024
+  total_timesteps:
+    value: 100000000  # 100M timesteps
+  num_steps:
+    value: 64
+  update_epochs:
+    value: 4
+  num_minibatches:
+    value: 8
+  gamma:
+    value: 0.99
+  gae_lambda:
+    value: 0.8
+  clip_eps:
+    value: 0.2
+  ent_coef:
+    value: 0.01
+  vf_coef:
+    value: 0.5
+  kl_coef:
+    value: 0.05
+  use_forward_kl:
+    value: false
+  max_grad_norm:
+    value: 1.0
+  activation:
+    value: "tanh"
+  anneal_lr:
+    value: true
+  debug:
+    value: true
+  jit:
+    value: true
+  use_wandb:
+    value: true
+  save_policy:
+    value: false
+  num_repeats:
+    value: 1
+  layer_size:
+    value: 512
+  use_optimistic_resets:
+    value: true
+  optimistic_reset_ratio:
+    value: 16
+  max_num_skills:
+    value: 3
