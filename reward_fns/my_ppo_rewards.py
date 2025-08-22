@@ -17,7 +17,7 @@ ACHIEVEMENT_REWARDS = {
     
     # Iron prerequisites - furnace needed for smelting
     Achievement.PLACE_FURNACE.value: {"reward": 1.0, "enabled": False},
-    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},
+    Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": False},
     Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
     
     # Iron crafting goals - final objectives
@@ -54,6 +54,96 @@ def configurable_achievement_reward_fn(prev_state, cur_state, done: jnp.ndarray)
     
     # Process each configured achievement
     for achievement_id, config in ACHIEVEMENT_REWARDS.items():
+        if config["enabled"]:
+            # Add reward for newly achieved accomplishments
+            achievement_gained = achievement_deltas[achievement_id]
+            total_reward += achievement_gained * config["reward"]
+    
+    # Return 0 if episode done, otherwise return calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    return jnp.array(reward, dtype=jnp.float32)
+
+def no_iron_configurable_achievement_reward_fn(prev_state, cur_state, done: jnp.ndarray) -> jnp.float32:
+    """
+    Calculates reward based on configurable achievement progression.
+    Focuses on the minimal set needed to learn iron crafting.
+    """
+    # Calculate achievement differences
+    prev_achievements = prev_state.achievements.astype(jnp.float32)
+    cur_achievements = cur_state.achievements.astype(jnp.float32)
+    achievement_deltas = cur_achievements - prev_achievements
+    
+    total_reward = 0.0
+    
+    NO_IRON_ACHIEVEMENT_REWARDS = {
+        Achievement.MAKE_WOOD_PICKAXE.value: {"reward": 1.0, "enabled": True},
+        Achievement.MAKE_STONE_PICKAXE.value: {"reward": 1.0, "enabled": True},
+        Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": False},
+        Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},        
+        Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": True},
+    }
+    # Process each configured achievement
+    for achievement_id, config in NO_IRON_ACHIEVEMENT_REWARDS.items():
+        if config["enabled"]:
+            # Add reward for newly achieved accomplishments
+            achievement_gained = achievement_deltas[achievement_id]
+            total_reward += achievement_gained * config["reward"]
+    
+    # Return 0 if episode done, otherwise return calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    return jnp.array(reward, dtype=jnp.float32)
+
+def no_stone_pick_configurable_achievement_reward_fn(prev_state, cur_state, done: jnp.ndarray) -> jnp.float32:
+    """
+    Calculates reward based on configurable achievement progression.
+    Focuses on the minimal set needed to learn iron crafting.
+    """
+    # Calculate achievement differences
+    prev_achievements = prev_state.achievements.astype(jnp.float32)
+    cur_achievements = cur_state.achievements.astype(jnp.float32)
+    achievement_deltas = cur_achievements - prev_achievements
+    
+    total_reward = 0.0
+    
+    NO_IRON_ACHIEVEMENT_REWARDS = {
+        Achievement.MAKE_WOOD_PICKAXE.value: {"reward": 1.0, "enabled": True},
+        Achievement.MAKE_STONE_PICKAXE.value: {"reward": 1.0, "enabled": False},
+        Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
+        Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},        
+        Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": True},
+    }
+    # Process each configured achievement
+    for achievement_id, config in NO_IRON_ACHIEVEMENT_REWARDS.items():
+        if config["enabled"]:
+            # Add reward for newly achieved accomplishments
+            achievement_gained = achievement_deltas[achievement_id]
+            total_reward += achievement_gained * config["reward"]
+    
+    # Return 0 if episode done, otherwise return calculated reward
+    reward = jnp.where(done, 0.0, total_reward)
+    return jnp.array(reward, dtype=jnp.float32)
+
+def no_iron_pick_configurable_achievement_reward_fn(prev_state, cur_state, done: jnp.ndarray) -> jnp.float32:
+    """
+    Calculates reward based on configurable achievement progression.
+    Focuses on the minimal set needed to learn iron crafting.
+    """
+    # Calculate achievement differences
+    prev_achievements = prev_state.achievements.astype(jnp.float32)
+    cur_achievements = cur_state.achievements.astype(jnp.float32)
+    achievement_deltas = cur_achievements - prev_achievements
+    
+    total_reward = 0.0
+    
+    NO_IRON_ACHIEVEMENT_REWARDS = {
+        Achievement.MAKE_WOOD_PICKAXE.value: {"reward": 1.0, "enabled": True},
+        Achievement.MAKE_STONE_PICKAXE.value: {"reward": 1.0, "enabled": True},
+        Achievement.COLLECT_IRON.value: {"reward": 1.0, "enabled": True},
+        Achievement.COLLECT_COAL.value: {"reward": 1.0, "enabled": True},        
+        Achievement.MAKE_IRON_PICKAXE.value: {"reward": 1.0, "enabled": False},
+    }
+    # Process each configured achievement
+    for achievement_id, config in NO_IRON_ACHIEVEMENT_REWARDS.items():
         if config["enabled"]:
             # Add reward for newly achieved accomplishments
             achievement_gained = achievement_deltas[achievement_id]

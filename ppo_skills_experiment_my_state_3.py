@@ -50,6 +50,9 @@ from reward_fns.my_skill_rewards_state import (
 )
 from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
+    no_iron_configurable_achievement_reward_fn,
+    no_stone_pick_configurable_achievement_reward_fn,
+    no_iron_pick_configurable_achievement_reward_fn,
 )
 from meta_policy.skill_training import (
     skill_selector,
@@ -122,7 +125,6 @@ def make_train(config):
     )
     env_params = env.default_params
 
-    env = EnergyWrapper(env)
     env = LogWrapper(env)
     if config["USE_OPTIMISTIC_RESETS"]:
         env = OptimisticResetVecEnvWrapper(
@@ -337,7 +339,7 @@ def make_train(config):
                 )
                 
                 # Only select new skills for environments that should terminate
-                new_skill_indices = jax.vmap(single_skill_selector_two)(base_obs)
+                new_skill_indices = jax.vmap(single_skill_selector_zero)(base_obs)
                 skill_indices = jnp.where(should_terminate, new_skill_indices, last_skill_indices)
                 
                 # Update current skill durations
@@ -352,10 +354,10 @@ def make_train(config):
                 last_base_obs = last_obs[:, :-config["MAX_NUM_SKILLS"]]
 
                 # GPT ones
-                reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
-                def select_reward_single(index, prev_obs, cur_obs):
-                    return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs)
-                reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs)
+                # reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
+                # def select_reward_single(index, prev_obs, cur_obs):
+                #     return jax.lax.switch(index, reward_fns_single, prev_obs, cur_obs)
+                # reward_i = jax.vmap(select_reward_single)(last_skill_indices, last_base_obs, base_obs)
 
                 # My obs based ones
                 # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
@@ -372,10 +374,10 @@ def make_train(config):
                 # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
                 # reward_fns_single = [my_combined_reward_fn_state]
                 # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
-                # reward_fns_single = [configurable_achievement_reward_fn]
-                # def select_reward_single(index, prev_state, cur_state, done_val):
-                #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-                # reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
+                reward_fns_single = [no_stone_pick_configurable_achievement_reward_fn]
+                def select_reward_single(index, prev_state, cur_state, done_val):
+                    return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+                reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
                 
                 # reward_e_subset = jax.vmap(configurable_achievement_reward_fn)(prev_env_state.env_state, env_state.env_state, done)
                 # Switch between rewards
@@ -771,7 +773,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     """
     
     env = make_craftax_env_from_name(config["ENV_NAME"], not config["USE_OPTIMISTIC_RESETS"])
-    env = EnergyWrapper(env)
+    # env = EnergyWrapper(env)
     env = LogWrapper(env)
     env = AutoResetEnvWrapper(env)
     env_params = env.default_params
@@ -838,7 +840,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     while not done and t < 1000:
         last_obs = last_obs.flatten()
         if should_terminate_skill:
-            curr_skill_index = single_skill_selector_two(last_obs)
+            curr_skill_index = single_skill_selector_zero(last_obs)
             current_skill_duration = jnp.array(0) # this isn't 0 since it could pick the same skill again.
         else:
             curr_skill_index = last_skill_index
@@ -860,10 +862,10 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         should_terminate_skill = get_termination_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, current_skill_duration, done)
 
         # Calculate active skill reward
-        reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
-        def select_reward_single(index, last_b_obs_s, b_obs_s):
-            return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
-        skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
+        # reward_fns_single = [harvesting_reward_fn, crafting_reward_fn, survival_reward_fn]
+        # def select_reward_single(index, last_b_obs_s, b_obs_s):
+        #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s)
+        # skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs)
 
         # reward_fns_single = [my_harvesting_reward_fn, my_crafting_reward_fn, my_survival_reward_fn]
         # def select_reward_single(index, last_b_obs_s, b_obs_s, done_val):
@@ -874,10 +876,10 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_combined_reward_fn_state]
-        # reward_fns_single = [configurable_achievement_reward_fn]
-        # def select_reward_single(index, prev_state, cur_state, done_val):
-        #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-        # skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
+        reward_fns_single = [no_stone_pick_configurable_achievement_reward_fn]
+        def select_reward_single(index, prev_state, cur_state, done_val):
+            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
 
         # Count mobs nearby
         mobs_nearby = count_mobs_nearby(base_obs)
@@ -906,8 +908,8 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     
     # Create combined subplot layout with all plots
     timesteps = list(range(len(skill_trace)))
-    fig, axes = plt.subplots(4, 2, constrained_layout=True)
-    # fig.suptitle(f'Agent Performance During Evaluation (Update {update_frac}%)', fontsize=16)
+    fig, axes = plt.subplots(5, 2, figsize=(12, 20))
+    fig.suptitle(f'Agent Performance During Evaluation (Update {update_frac}%)', fontsize=16, y=0.98)
     
     # Skill plot (top left)
     axes[0, 0].step(timesteps, skill_trace, where='post', color='blue', linewidth=2)
@@ -962,22 +964,20 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     axes[3, 1].set_ylim(0, 10)
     
     # Lava adjacent plot (fifth row left)
-    # axes[4, 0].plot(timesteps, lava_adjacent_trace, color='red', linewidth=2)
-    # axes[4, 0].set_title('Adjacent to Lava')
-    # axes[4, 0].grid(True, alpha=0.3)
-    # axes[4, 0].set_ylim(-0.1, 1.1)
-    # axes[4, 0].set_yticks([0, 1])
+    axes[4, 0].plot(timesteps, lava_adjacent_trace, color='red', linewidth=2)
+    axes[4, 0].set_title('Adjacent to Lava')
+    axes[4, 0].grid(True, alpha=0.3)
+    axes[4, 0].set_ylim(-0.1, 1.1)
+    axes[4, 0].set_yticks([0, 1])
     
     # Empty plot (fifth row right) - placeholder
-    # axes[4, 1].axis('off')
+    axes[4, 1].axis('off')
     
     # Adjust layout with proper spacing
-    # plt.tight_layout()
+    plt.tight_layout()
     
     # Log combined plot to wandb if enabled
     if config["USE_WANDB"]:
-        # fig.savefig(f"eval_{update_frac}.png", dpi=1600)
-        # wandb.log({f"Eval/agent_performance_{update_frac}": wandb.Image(f"eval_{update_frac}.png")}, commit=False)
         wandb.log({f"Eval/agent_performance_{update_frac}": fig}, commit=False)
     
     plt.close()
