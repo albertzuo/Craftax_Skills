@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from craftax.craftax_env import make_craftax_env_from_name # Added BlockType
+from craftax.craftax_env import make_craftax_env_from_name
 from craftax.craftax_classic.constants import *
 
 import wandb
@@ -23,15 +23,14 @@ from orbax.checkpoint import (
 )
 
 from logz.batch_logging import batch_log, create_log_dict
-# from models.diayn_ac import DiaynAc
 from models.actor_critic import (
     ActorCritic,
     ActorCriticConv,
 )
 from reward_fns.gemini_skill_rewards import (
-    calculate_harvesting_reward,
+    harvesting_reward_fn,
     crafting_reward_fn,
-    survival_reward_function,
+    survival_reward_fn,
 )
 from reward_fns.gemini_diverse_skills_rewards import (
     reward_broaden_horizons_stockpile,
@@ -61,15 +60,13 @@ from reward_fns.my_skill_rewards_state import (
 from reward_fns.my_ppo_rewards import (
     configurable_achievement_reward_fn,
 )
-from reward_fns.custom_achievements.fort_achievements import (
+from reward_fns.custom_achievements.diamond_achievements_25 import (
     init_single_tracker,
     update_custom_achievements,
     get_custom_achievement_reward,
 )
 from meta_policy.skill_training import (
     skill_selector,
-    # skill_selector_v2,
-    # skill_selector_v3,
     skill_selector_two_skills,
     skill_selector_my_two_skills,
     single_skill_selector_zero,
@@ -79,16 +76,6 @@ from meta_policy.skill_training import (
     terminate_craft,
     terminate_sustain,
 )
-# from meta_policy.gemini_diverse_skills_training import (
-#     skill_selector,
-#     skill_selector_v2,
-# )
-# from meta_policy.gemini_personality_training import (
-#     skill_selector,
-#     terminate_cautious,
-#     terminate_driven,
-#     terminate_playful,
-# )
 from wrappers import (
     LogWrapper,
     OptimisticResetVecEnvWrapper,
@@ -136,7 +123,6 @@ def make_train(config):
     )
     env_params = env.default_params
 
-    # env = EnergyWrapper(env)
     env = LogWrapper(env)
     if config["USE_OPTIMISTIC_RESETS"]:
         env = OptimisticResetVecEnvWrapper(
@@ -387,8 +373,8 @@ def make_train(config):
                 # reward_i = jax.vmap(select_reward_single)(last_skill_indices, prev_env_state.env_state, env_state.env_state, done)
 
                 reward_fns_single = [get_custom_achievement_reward]
-                def select_reward_single(index, prev_state, cur_state):
-                    return jax.lax.switch(index, reward_fns_single, prev_state, cur_state)
+                def select_reward_single(index, prev_tracker, cur_tracker):
+                    return jax.lax.switch(index, reward_fns_single, prev_tracker, cur_tracker)
                 # Update custom achievements
                 updated_custom_trackers = jax.vmap(update_custom_achievements)(
                     prev_env_state.env_state, env_state.env_state, custom_trackers, done
@@ -890,6 +876,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
     last_skill_index = 0
     last_state = env_state
     last_obs = obs
+    custom_trackers = init_single_tracker()
     should_terminate_skill = True
 
     while not done and t < 1000:
@@ -922,26 +909,26 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         #     return jax.lax.switch(index, reward_fns_single, last_b_obs_s, b_obs_s, done_val)
         # skill_reward = select_reward_single(curr_skill_index, last_obs[:-config["MAX_NUM_SKILLS"]], base_obs, done)
 
-        reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
+        # reward_fns_single = [my_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_ppo_harvesting_reward_fn_state, my_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_harvesting_crafting_reward_fn_state, my_survival_reward_fn_state]
         # reward_fns_single = [my_combined_reward_fn_state]
         # reward_fns_single = [configurable_achievement_reward_fn]
-        def select_reward_single(index, prev_state, cur_state, done_val):
-            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
-        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
-
-        # reward_fns_single = [configurable_achievement_reward_fn]
         # def select_reward_single(index, prev_state, cur_state, done_val):
         #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
         # skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
+
+        reward_fns_single = [configurable_achievement_reward_fn]
+        def select_reward_single(index, prev_state, cur_state, done_val):
+            return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
+        skill_reward = select_reward_single(curr_skill_index, last_state.env_state, env_state.env_state, done)
         
         # reward_fns_single = [get_custom_achievement_reward]
         # def select_reward_single(index, prev_state, cur_state, done_val):
         #     return jax.lax.switch(index, reward_fns_single, prev_state, cur_state, done_val)
         # # Update custom achievements
         # updated_custom_trackers = jax.vmap(update_custom_achievements)(
-        #     prev_env_state.env_state, env_state.env_state, custom_trackers
+        #     last_state.env_state, env_state.env_state, custom_trackers
         # )
         # skill_reward = select_reward_single(last_skill_indices, custom_trackers, updated_custom_trackers, done)
 
@@ -966,6 +953,7 @@ def run_eval_and_plot(train_state, config, update_step, update_frac, network):
         last_skill_index = curr_skill_index
         last_obs = base_obs
         last_state = env_state
+        # custom_trackers = updated_custom_trackers
         t += 1
         if hasattr(done, "item"):
             done = done.item()
